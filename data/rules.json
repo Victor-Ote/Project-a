@@ -1,0 +1,22 @@
+[
+  {
+    "received": "Bom dia",
+    "sent": "Bom dia, aqui é da pizzaria foda ......"
+  },
+  {
+    "received": "contains: orçamento",
+    "sent": "Ótimo! Vou encaminhar seu pedido de orçamento. Qual é o seu email?"
+  },
+  {
+    "received": "regex: ^pedido\\s*#\\d+",
+    "sent": "Seu pedido foi registrado com sucesso! 📋"
+  },
+  {
+    "received": "menu",
+    "sent": "📋 Menu disponível:1️⃣ Orçamento2️⃣ Suporte3️⃣ Contato"
+  },
+  {
+    "received": "##",
+    "sent": "Salve"
+  }
+]

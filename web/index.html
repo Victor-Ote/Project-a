@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR Code - WhatsApp Bot</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="qr-screen">
+      <h1>🔐 Conectar WhatsApp</h1>
+      
+      <div id="qr-container" class="qr-container">
+        <p>Aguardando QR code...</p>
+      </div>
+      
+      <div id="status-container" class="status-container">
+        <p id="status-text">Status: Aguardando QR code</p>
+      </div>
+      
+      <a href="/messages" class="btn btn-primary">Gerenciar Mensagens →</a>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="index.js"></script>
+</body>
+</html>

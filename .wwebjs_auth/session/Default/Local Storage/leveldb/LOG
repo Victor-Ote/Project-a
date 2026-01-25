@@ -1,0 +1,9 @@
+2026/01/23-19:25:58.219 38d0 Reusing MANIFEST C:\Users\adm_d\Downloads\Chatbot\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
+2026/01/23-19:25:58.226 38d0 Recovering log #4
+2026/01/23-19:25:58.230 38d0 Reusing old log C:\Users\adm_d\Downloads\Chatbot\.wwebjs_auth\session\Default\Local Storage\leveldb/000004.log 
+2026/01/23-19:26:58.270 38d0 Level-0 table #6: started
+2026/01/23-19:26:58.282 38d0 Level-0 table #6: 19659 bytes OK
+2026/01/23-19:26:58.288 38d0 Delete type=0 #4
+2026/01/25-04:07:43.119 38d0 Level-0 table #8: started
+2026/01/25-04:07:43.149 38d0 Level-0 table #8: 15843 bytes OK
+2026/01/25-04:07:43.158 38d0 Delete type=0 #5
