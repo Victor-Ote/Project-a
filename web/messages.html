@@ -13,14 +13,32 @@
         <h1>📨 Fazer Mensagens</h1>
         <a href="/" class="btn btn-secondary">← Voltar</a>
       </div>
-      
-      <div id="rules-container" class="rules-container">
-        <!-- Linhas de regras serão adicionadas aqui dinamicamente -->
+
+      <!-- SEÇÃO: MENSAGEM DEFAULT -->
+      <div class="default-message-section">
+        <h2>💬 Mensagem Default</h2>
+        <p class="help-text">
+          Será enviada somente quando não houver atividade com o contato nas últimas 24h e nenhuma regra específica for acionada.
+        </p>
+        <textarea 
+          id="default-message-input" 
+          class="default-message-input" 
+          placeholder="Digite a mensagem padrão que será enviada automaticamente..."
+          rows="4"
+        ></textarea>
+      </div>
+
+      <!-- SEÇÃO: REGRAS -->
+      <div class="rules-section">
+        <h2>📋 Regras Específicas</h2>
+        <div id="rules-container" class="rules-container">
+          <!-- Linhas de regras serão adicionadas aqui dinamicamente -->
+        </div>
       </div>
       
       <div class="button-group">
-        <button id="btn-add" class="btn btn-secondary">Adicionar</button>
-        <button id="btn-save" class="btn btn-primary">Salvar</button>
+        <button id="btn-add" class="btn btn-secondary">Adicionar Regra</button>
+        <button id="btn-save" class="btn btn-primary">Salvar Tudo</button>
       </div>
     </div>
   </div>

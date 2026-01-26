@@ -6,6 +6,9 @@ const fs = require("fs");
 const qrcode = require("qrcode");
 const { Client, MessageMedia, LocalAuth } = require("whatsapp-web.js");
 const { findMatchingRule } = require("./src/rules/rulesStore");
+const { getSettingsSync, saveSettingsSync } = require("./src/settings/settingsStore");
+const { markActivity, markDefaultSent } = require("./src/state/contactStateStore");
+const { shouldSendDefault } = require("./src/bot/defaultReply");
 
 // =====================================
 // CONFIGURAÇÃO DE PORTAS E DIRETÓRIOS
@@ -163,6 +166,10 @@ client.on("message", async (msg) => {
     }
     addProcessedMessage(msgId);
 
+    // Marcar atividade do contato
+    const contactId = msg.from;
+    markActivity(contactId);
+
     const messageBody = msg.body || "";
 
     // Função de digitação
@@ -180,14 +187,34 @@ client.on("message", async (msg) => {
     
     if (matchedRule) {
       // Uma regra foi correspondida - usar a resposta da regra
-      console.log(`📨 Usando resposta da regra: "${matchedRule.sent}"`);
+      console.log(`📨 [${contactId}] Usando resposta da regra: "${matchedRule.sent}"`);
       await typing();
       await client.sendMessage(msg.from, matchedRule.sent);
+      markActivity(contactId); // Atualizar atividade após enviar
       return;
     }
 
     // =====================================
-    // FALLBACK: MENSAGEM INICIAL DE BOAS-VINDAS
+    // TENTAR ENVIAR MENSAGEM DEFAULT
+    // =====================================
+    const settings = getSettingsSync();
+    const defaultMessage = settings.defaultMessage.trim();
+
+    if (defaultMessage) {
+      // Verificar se deve enviar default (janela 24h)
+      const canSendDefault = await shouldSendDefault(chat, contactId);
+
+      if (canSendDefault) {
+        console.log(`💬 [${contactId}] Enviando mensagem default`);
+        await typing();
+        await client.sendMessage(msg.from, defaultMessage);
+        markDefaultSent(contactId); // Marca default enviado + atividade
+        return;
+      }
+    }
+
+    // =====================================
+    // FALLBACK: MENSAGEM INICIAL DE BOAS-VINDAS (LEGADO)
     // =====================================
     const texto = messageBody.trim().toLowerCase();
     
@@ -206,9 +233,34 @@ client.on("message", async (msg) => {
         `${saudacao}! 👋\n\n` +
         `Essa mensagem foi enviada automaticamente pelo robô 🤖\n\n`
       );
+      markActivity(contactId); // Atualizar atividade após enviar
     }
   } catch (err) {
     console.error("❌ Erro ao processar mensagem:", err.message);
+  }
+});
+
+// =====================================
+// EVENTO: MENSAGENS CRIADAS (CAPTURA ENVIOS MANUAIS)
+// =====================================
+client.on("message_create", async (msg) => {
+  try {
+    // Apenas mensagens enviadas por mim (bot ou usuário manual)
+    if (!msg.fromMe) return;
+
+    // Ignorar grupos
+    if (msg.to && msg.to.endsWith("@g.us")) return;
+
+    // Determinar o contato destinatário
+    const contactId = msg.to || msg.from;
+    
+    if (contactId && !contactId.endsWith("@g.us")) {
+      // Marcar atividade (mensagens enviadas manualmente também renovam janela)
+      markActivity(contactId);
+      console.log(`📤 [${contactId}] Mensagem enviada (manual ou bot) - atividade marcada`);
+    }
+  } catch (err) {
+    console.error("❌ Erro ao processar message_create:", err.message);
   }
 });
 
@@ -298,6 +350,45 @@ app.post("/api/rules", (req, res) => {
   } catch (err) {
     console.error("❌ Erro ao salvar regras:", err.message);
     return res.status(500).json({ error: "Erro ao salvar regras" });
+  }
+});
+
+// =====================================
+// API REST: GET SETTINGS
+// =====================================
+app.get("/api/settings", (req, res) => {
+  try {
+    const settings = getSettingsSync();
+    return res.json(settings);
+  } catch (err) {
+    console.error("❌ Erro ao ler settings:", err.message);
+    return res.status(500).json({ error: "Erro ao ler settings" });
+  }
+});
+
+// =====================================
+// API REST: POST SETTINGS
+// =====================================
+app.post("/api/settings", (req, res) => {
+  try {
+    const { defaultMessage } = req.body;
+
+    // Validar
+    if (typeof defaultMessage !== "string") {
+      return res.status(400).json({ error: "defaultMessage deve ser string" });
+    }
+
+    // Salvar
+    const success = saveSettingsSync({ defaultMessage: defaultMessage.trim() });
+
+    if (success) {
+      return res.json({ success: true });
+    } else {
+      return res.status(500).json({ error: "Erro ao salvar settings" });
+    }
+  } catch (err) {
+    console.error("❌ Erro ao salvar settings:", err.message);
+    return res.status(500).json({ error: "Erro ao salvar settings" });
   }
 });
 
