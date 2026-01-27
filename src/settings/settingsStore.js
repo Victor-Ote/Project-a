@@ -5,8 +5,14 @@ const path = require("path");
 // CONFIGURAÇÃO
 // =====================================
 const SETTINGS_FILE = path.resolve(__dirname, "../../data/settings.json");
+const DEFAULT_WINDOW_SECONDS = 24 * 60 * 60; // 24 horas
+const MIN_WINDOW_SECONDS = 10; // 10 segundos mínimo
+const MAX_WINDOW_SECONDS = 7 * 24 * 60 * 60; // 7 dias máximo
 
-let cachedSettings = { defaultMessage: "" };
+let cachedSettings = { 
+  defaultMessage: "", 
+  defaultWindowSeconds: DEFAULT_WINDOW_SECONDS 
+};
 let lastMtime = null;
 
 // =====================================
@@ -16,7 +22,10 @@ function getSettingsSync() {
   try {
     // Verificar se arquivo existe
     if (!fs.existsSync(SETTINGS_FILE)) {
-      cachedSettings = { defaultMessage: "" };
+      cachedSettings = { 
+        defaultMessage: "", 
+        defaultWindowSeconds: DEFAULT_WINDOW_SECONDS 
+      };
       lastMtime = null;
       return cachedSettings;
     }
@@ -40,11 +49,16 @@ function getSettingsSync() {
       return cachedSettings;
     }
 
+    // Validar windowSeconds
+    if (!settings.defaultWindowSeconds) {
+      settings.defaultWindowSeconds = DEFAULT_WINDOW_SECONDS;
+    }
+
     // Atualizar cache
     cachedSettings = settings;
     lastMtime = currentMtime;
 
-    console.log(`✅ Settings recarregado: defaultMessage = ${settings.defaultMessage.length} caracteres`);
+    console.log(`✅ Settings recarregado: defaultMessage = ${settings.defaultMessage.length} caracteres, windowSeconds = ${settings.defaultWindowSeconds}s`);
     return cachedSettings;
   } catch (err) {
     if (err instanceof SyntaxError) {
@@ -67,6 +81,12 @@ function saveSettingsSync(settings) {
       throw new Error("defaultMessage deve ser string");
     }
 
+    if (typeof settings.defaultWindowSeconds !== "number" || 
+        settings.defaultWindowSeconds < MIN_WINDOW_SECONDS || 
+        settings.defaultWindowSeconds > MAX_WINDOW_SECONDS) {
+      throw new Error(`defaultWindowSeconds deve estar entre ${MIN_WINDOW_SECONDS}s e ${MAX_WINDOW_SECONDS}s`);
+    }
+
     // Criar diretório se não existir
     const dir = path.dirname(SETTINGS_FILE);
     if (!fs.existsSync(dir)) {
@@ -80,7 +100,7 @@ function saveSettingsSync(settings) {
     cachedSettings = settings;
     lastMtime = fs.statSync(SETTINGS_FILE).mtimeMs;
 
-    console.log(`✅ Settings salvo: defaultMessage = ${settings.defaultMessage.length} caracteres`);
+    console.log(`✅ Settings salvo: defaultMessage = ${settings.defaultMessage.length} caracteres, windowSeconds = ${settings.defaultWindowSeconds}s`);
     return true;
   } catch (err) {
     console.error("❌ Erro ao salvar settings.json:", err.message);
@@ -93,5 +113,8 @@ function saveSettingsSync(settings) {
 // =====================================
 module.exports = {
   getSettingsSync,
-  saveSettingsSync
+  saveSettingsSync,
+  DEFAULT_WINDOW_SECONDS,
+  MIN_WINDOW_SECONDS,
+  MAX_WINDOW_SECONDS
 };

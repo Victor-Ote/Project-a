@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# WhatsApp Web.js
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Runtime data
+data/
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

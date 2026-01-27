@@ -1,10 +1,12 @@
 let rules = [];
 let defaultMessage = "";
+let defaultWindowSeconds = 24 * 60 * 60; // 24 horas em segundos
 
 const rulesContainer = document.getElementById("rules-container");
 const btnAdd = document.getElementById("btn-add");
 const btnSave = document.getElementById("btn-save");
 const defaultMessageInput = document.getElementById("default-message-input");
+const defaultWindowInput = document.getElementById("default-window-input");
 
 // =====================================
 // FUNÇÃO: CRIAR SVG TRASH ICON
@@ -135,6 +137,10 @@ async function saveRules() {
 
   // Obter default message
   const newDefaultMessage = defaultMessageInput.value.trim();
+  
+  // Obter janela de tempo (converter minutos para segundos)
+  const windowMinutes = parseFloat(defaultWindowInput.value) || 1440;
+  const newWindowSeconds = Math.floor(windowMinutes * 60);
 
   try {
     // Salvar regras
@@ -150,18 +156,21 @@ async function saveRules() {
 
     const rulesResult = await rulesResponse.json();
 
-    // Salvar settings (default message)
+    // Salvar settings (default message + janela)
     const settingsResponse = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ defaultMessage: newDefaultMessage })
+      body: JSON.stringify({ 
+        defaultMessage: newDefaultMessage,
+        defaultWindowSeconds: newWindowSeconds
+      })
     });
 
     if (!settingsResponse.ok) {
       throw new Error("Erro ao salvar mensagem default");
     }
 
-    alert(`✅ Salvo com sucesso!\n- ${rulesResult.count} regra(s)\n- Mensagem default: ${newDefaultMessage ? 'configurada' : 'removida'}`);
+    alert(`✅ Salvo com sucesso!\n- ${rulesResult.count} regra(s)\n- Mensagem default: ${newDefaultMessage ? 'configurada' : 'removida'}\n- Janela: ${windowMinutes} minuto(s)`);
     loadAll();
   } catch (err) {
     alert(`❌ Erro ao salvar: ${err.message}`);
@@ -202,10 +211,20 @@ async function loadSettings() {
     const settings = await response.json();
     defaultMessage = settings.defaultMessage || "";
     defaultMessageInput.value = defaultMessage;
+    
+    // Converter seconds para minutes no input
+    if (settings.defaultWindowSeconds) {
+      defaultWindowSeconds = settings.defaultWindowSeconds;
+      const minutes = Math.round(defaultWindowSeconds / 60);
+      defaultWindowInput.value = minutes;
+    } else {
+      defaultWindowInput.value = 1440; // 24 horas padrão
+    }
   } catch (err) {
     console.error("❌ Erro ao carregar settings:", err);
     defaultMessage = "";
     defaultMessageInput.value = "";
+    defaultWindowInput.value = 1440;
   }
 }
 

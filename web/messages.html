@@ -18,7 +18,7 @@
       <div class="default-message-section">
         <h2>💬 Mensagem Default</h2>
         <p class="help-text">
-          Será enviada somente quando não houver atividade com o contato nas últimas 24h e nenhuma regra específica for acionada.
+          Será enviada somente quando não houver atividade com o contato nas últimas horas/minutos e nenhuma regra específica for acionada.
         </p>
         <textarea 
           id="default-message-input" 
@@ -26,6 +26,20 @@
           placeholder="Digite a mensagem padrão que será enviada automaticamente..."
           rows="4"
         ></textarea>
+
+        <div class="default-window-group">
+          <label for="default-window-input">Janela da mensagem default (minutos)</label>
+          <input 
+            type="number" 
+            id="default-window-input" 
+            class="default-window-input" 
+            min="0.17" 
+            max="10080" 
+            value="1440"
+            placeholder="1440 (24 horas)"
+          >
+          <p class="window-help-text">Mínimo: 10s (≈0.17min), Máximo: 7 dias (10080min). Padrão: 1440min (24h)</p>
+        </div>
       </div>
 
       <!-- SEÇÃO: REGRAS -->

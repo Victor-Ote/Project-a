@@ -162,6 +162,7 @@ body {
   resize: vertical;
   min-height: 100px;
   transition: all 0.3s ease;
+  margin-bottom: 15px;
 }
 
 .default-message-input:focus {
@@ -172,6 +173,40 @@ body {
 
 .default-message-input::placeholder {
   color: #999;
+}
+
+.default-window-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.default-window-group label {
+  font-weight: 600;
+  color: #333;
+  font-size: 14px;
+}
+
+.default-window-input {
+  padding: 10px 12px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  transition: all 0.3s ease;
+  max-width: 200px;
+}
+
+.default-window-input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.window-help-text {
+  color: #999;
+  font-size: 12px;
+  margin-top: 5px;
 }
 
 /* =====================================

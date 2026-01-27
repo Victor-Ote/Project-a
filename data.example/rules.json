@@ -1,0 +1,10 @@
+[
+  {
+    "received": "oi",
+    "sent": "Olá! Bem-vindo ao bot! 👋"
+  },
+  {
+    "received": "menu",
+    "sent": "📋 Menu:\n1. Informações\n2. Suporte\n3. Sair"
+  }
+]

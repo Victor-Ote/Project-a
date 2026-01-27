@@ -166,10 +166,7 @@ client.on("message", async (msg) => {
     }
     addProcessedMessage(msgId);
 
-    // Marcar atividade do contato
     const contactId = msg.from;
-    markActivity(contactId);
-
     const messageBody = msg.body || "";
 
     // Função de digitação
@@ -179,6 +176,8 @@ client.on("message", async (msg) => {
       await chat.sendStateTyping();
       await delay(2000);
     };
+
+    let responseSent = false;
 
     // =====================================
     // TENTAR CORRESPONDÊNCIA COM REGRAS
@@ -190,50 +189,66 @@ client.on("message", async (msg) => {
       console.log(`📨 [${contactId}] Usando resposta da regra: "${matchedRule.sent}"`);
       await typing();
       await client.sendMessage(msg.from, matchedRule.sent);
-      markActivity(contactId); // Atualizar atividade após enviar
-      return;
-    }
+      responseSent = true;
+      markActivity(contactId); // Registrar após enviar
+    } 
+    else {
+      // =====================================
+      // TENTAR ENVIAR MENSAGEM DEFAULT
+      // =====================================
+      const settings = getSettingsSync();
+      const defaultMessage = settings.defaultMessage.trim();
 
-    // =====================================
-    // TENTAR ENVIAR MENSAGEM DEFAULT
-    // =====================================
-    const settings = getSettingsSync();
-    const defaultMessage = settings.defaultMessage.trim();
+      if (defaultMessage) {
+        // Determinar janela: ENV > settings > default (24h)
+        const windowSeconds = parseInt(process.env.DEFAULT_WINDOW_SECONDS, 10) || 
+                             settings.defaultWindowSeconds || 
+                             (24 * 60 * 60);
 
-    if (defaultMessage) {
-      // Verificar se deve enviar default (janela 24h)
-      const canSendDefault = await shouldSendDefault(chat, contactId);
+        // Verificar se deve enviar default (janela configurável + ignorar msg atual)
+        const canSendDefault = await shouldSendDefault(chat, contactId, { 
+          windowSeconds,
+          ignoreMsgId: msgId 
+        });
 
-      if (canSendDefault) {
-        console.log(`💬 [${contactId}] Enviando mensagem default`);
-        await typing();
-        await client.sendMessage(msg.from, defaultMessage);
-        markDefaultSent(contactId); // Marca default enviado + atividade
-        return;
+        if (canSendDefault) {
+          console.log(`💬 [${contactId}] Enviando mensagem default (janela: ${Math.floor(windowSeconds / 60)} min)`);
+          await typing();
+          await client.sendMessage(msg.from, defaultMessage);
+          responseSent = true;
+          markDefaultSent(contactId); // Marca default enviado + atividade
+        }
+      }
+
+      // =====================================
+      // FALLBACK: MENSAGEM INICIAL DE BOAS-VINDAS (LEGADO)
+      // =====================================
+      if (!responseSent) {
+        const texto = messageBody.trim().toLowerCase();
+        if (/^(menu|oi|olá|ola|bom dia|boa tarde|boa noite|#automação)$/i.test(texto)) {
+          await typing();
+
+          const hora = new Date().getHours();
+          let saudacao = "Olá";
+
+          if (hora >= 5 && hora < 12) saudacao = "Bom dia";
+          else if (hora >= 12 && hora < 18) saudacao = "Boa tarde";
+          else saudacao = "Boa noite";
+
+          await client.sendMessage(
+            msg.from,
+            `${saudacao}! 👋\n\n` +
+            `Essa mensagem foi enviada automaticamente pelo robô 🤖\n\n`
+          );
+          responseSent = true;
+          markActivity(contactId); // Registrar após enviar
+        }
       }
     }
 
-    // =====================================
-    // FALLBACK: MENSAGEM INICIAL DE BOAS-VINDAS (LEGADO)
-    // =====================================
-    const texto = messageBody.trim().toLowerCase();
-    
-    if (/^(menu|oi|olá|ola|bom dia|boa tarde|boa noite|#automação)$/i.test(texto)) {
-      await typing();
-
-      const hora = new Date().getHours();
-      let saudacao = "Olá";
-
-      if (hora >= 5 && hora < 12) saudacao = "Bom dia";
-      else if (hora >= 12 && hora < 18) saudacao = "Boa tarde";
-      else saudacao = "Boa noite";
-
-      await client.sendMessage(
-        msg.from,
-        `${saudacao}! 👋\n\n` +
-        `Essa mensagem foi enviada automaticamente pelo robô 🤖\n\n`
-      );
-      markActivity(contactId); // Atualizar atividade após enviar
+    // Registrar atividade inbound no final (contato passou a estar dentro da janela)
+    if (!responseSent) {
+      markActivity(contactId);
     }
   } catch (err) {
     console.error("❌ Erro ao processar mensagem:", err.message);
@@ -371,15 +386,31 @@ app.get("/api/settings", (req, res) => {
 // =====================================
 app.post("/api/settings", (req, res) => {
   try {
-    const { defaultMessage } = req.body;
+    const { defaultMessage, defaultWindowSeconds } = req.body;
 
-    // Validar
+    // Validar message
     if (typeof defaultMessage !== "string") {
       return res.status(400).json({ error: "defaultMessage deve ser string" });
     }
 
+    // Validar e preparar windowSeconds
+    let windowSeconds = defaultWindowSeconds;
+    if (windowSeconds === undefined || windowSeconds === null) {
+      windowSeconds = 24 * 60 * 60; // 24 horas padrão
+    } else if (typeof windowSeconds !== "number") {
+      return res.status(400).json({ error: "defaultWindowSeconds deve ser número" });
+    }
+
+    // Validar range (10s a 7 dias)
+    if (windowSeconds < 10 || windowSeconds > 604800) {
+      return res.status(400).json({ error: "defaultWindowSeconds deve estar entre 10 segundos e 7 dias (604800 segundos)" });
+    }
+
     // Salvar
-    const success = saveSettingsSync({ defaultMessage: defaultMessage.trim() });
+    const success = saveSettingsSync({ 
+      defaultMessage: defaultMessage.trim(),
+      defaultWindowSeconds: Math.floor(windowSeconds)
+    });
 
     if (success) {
       return res.json({ success: true });

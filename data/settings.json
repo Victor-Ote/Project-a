@@ -1,3 +1,4 @@
 {
-  "defaultMessage": "Olá! Esta é uma mensagem default de teste."
+  "defaultMessage": "Olá! Esta é uma mensagem default que vai ser enviada pelo tempo que você vai determinar!",
+  "defaultWindowSeconds": 86400
 }
