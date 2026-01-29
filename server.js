@@ -47,12 +47,178 @@ let currentStatus = "waiting_qr";
 const processedMessages = new Set();
 const DUPLICATE_TIMEOUT = 10 * 60 * 1000; // 10 minutos
 
+// =====================================
+// CONTROLE DE SESSÃO
+// =====================================
+const sessions = new Map();
+const SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutos
+const COMMAND_MENU = "menu";
+
 // Função para limpar mensagens processadas após timeout
 function addProcessedMessage(msgId) {
   processedMessages.add(msgId);
   setTimeout(() => {
     processedMessages.delete(msgId);
   }, DUPLICATE_TIMEOUT);
+}
+
+function normalizeInput(input) {
+  return (input || "").trim();
+}
+
+function getMenuInicialText() {
+  return "Olá! 👋\nResponda apenas com um número:\n\n1️⃣ Planos\n2️⃣ Como funciona\n3️⃣ Falar com atendente\n\n9️⃣ Repetir menu\n0️⃣ Encerrar";
+}
+
+async function sendMenuInicial(chatId) {
+  console.log("[FLOW] Enviando MENU_INICIAL:", chatId);
+  await client.sendMessage(chatId, getMenuInicialText());
+  console.log("[FLOW] MENU_INICIAL enviado:", chatId);
+}
+
+function getPlanosText() {
+  return "📦 *Planos*\nResponda apenas com um número:\n\n1️⃣ Plano Básico\n2️⃣ Plano Pro\n\n9️⃣ Voltar ao menu\n0️⃣ Encerrar";
+}
+
+async function sendPlanos(chatId) {
+  console.log("[FLOW] Enviando PLANOS:", chatId);
+  await client.sendMessage(chatId, getPlanosText());
+  console.log("[FLOW] PLANOS enviado:", chatId);
+}
+
+function isNumericOnly(body) {
+  return /^[0-9]+$/.test(body);
+}
+
+async function handleMenuFlow(chatId, body, session) {
+  console.log("[MENU] Entrada recebida:", chatId, "body=", body, "step=", session.step);
+
+  if (session.step === "MENU_INICIAL") {
+    // Validar entrada numérica
+    if (!isNumericOnly(body)) {
+      await client.sendMessage(chatId, "⚠️ Responda apenas com números (1, 2, 3, 9 ou 0).");
+      await sendMenuInicial(chatId);
+      console.log("[MENU][ERROR] Entrada não numérica no MENU_INICIAL:", chatId, body);
+      return;
+    }
+
+    // Processar escolhas numéricas
+    switch (body) {
+      case "1":
+        session.step = "PLANOS";
+        console.log("[STEP] Alterando step:", chatId, "=>", session.step);
+        await sendPlanos(chatId);
+        break;
+
+      case "2":
+        await client.sendMessage(chatId, "✅ Você escolheu: Como funciona");
+        console.log("[MENU] Escolha 2 (Como funciona):", chatId);
+        break;
+
+      case "3":
+        await client.sendMessage(chatId, "✅ Você escolheu: Falar com atendente");
+        console.log("[MENU] Escolha 3 (Atendente):", chatId);
+        break;
+
+      case "9":
+        await sendMenuInicial(chatId);
+        console.log("[MENU] Repetir menu (9):", chatId);
+        break;
+
+      case "0":
+        await client.sendMessage(chatId, "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente.");
+        console.log("[MENU] Encerrar (0):", chatId);
+        resetSession(chatId);
+        console.log("[MENU] Saindo do modo MENU:", chatId);
+        break;
+
+      default:
+        await client.sendMessage(chatId, "⚠️ Opção inválida. Digite 1, 2, 3, 9 ou 0.");
+        await sendMenuInicial(chatId);
+        console.log("[MENU][ERROR] Opção inválida:", chatId, body);
+        break;
+    }
+  } else if (session.step === "PLANOS") {
+    // Validar entrada numérica
+    if (!isNumericOnly(body)) {
+      await client.sendMessage(chatId, "⚠️ Responda apenas com números (1, 2, 9 ou 0).");
+      await sendPlanos(chatId);
+      console.log("[MENU][ERROR] Entrada não numérica em PLANOS:", chatId, body);
+      return;
+    }
+
+    // Processar escolhas numéricas do PLANOS
+    switch (body) {
+      case "1":
+        await client.sendMessage(chatId, "✅ Plano Básico selecionado. (placeholder)");
+        console.log("[PLANOS] Escolha 1 (Básico):", chatId);
+        break;
+
+      case "2":
+        await client.sendMessage(chatId, "✅ Plano Pro selecionado. (placeholder)");
+        console.log("[PLANOS] Escolha 2 (Pro):", chatId);
+        break;
+
+      case "9":
+        session.step = "MENU_INICIAL";
+        console.log("[ACTION] Voltar ao MENU_INICIAL:", chatId);
+        await sendMenuInicial(chatId);
+        break;
+
+      case "0":
+        await client.sendMessage(chatId, "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente.");
+        console.log("[MENU] Encerrar (0):", chatId);
+        session.mode = null;
+        session.step = "MENU_INICIAL";
+        console.log("[MENU] Saindo do modo MENU:", chatId);
+        break;
+
+      default:
+        await client.sendMessage(chatId, "⚠️ Opção inválida. Digite 1, 2, 9 ou 0.");
+        await sendPlanos(chatId);
+        console.log("[PLANOS][ERROR] Opção inválida:", chatId, body);
+        break;
+    }
+  }
+}
+
+// =====================================
+// FUNÇÕES DE SESSÃO
+// =====================================
+function getSession(chatId) {
+  let session = sessions.get(chatId);
+
+  // Se não existir, criar nova
+  if (!session) {
+    session = {
+      step: "MENU_INICIAL",
+      data: {},
+      lastMessageAt: Date.now()
+    };
+    sessions.set(chatId, session);
+    console.log(`[SESSION] Nova sessão criada: ${chatId}`);
+    return session;
+  }
+
+  // Se existir, verificar expiração
+  const elapsed = Date.now() - session.lastMessageAt;
+  if (elapsed > SESSION_TTL_MS) {
+    console.log(`[SESSION] Sessão expirada, resetando: ${chatId}`);
+    session.step = "MENU_INICIAL";
+    session.data = {};
+    session.lastMessageAt = Date.now();
+    return session;
+  }
+
+  // Atualizar lastMessageAt
+  session.lastMessageAt = Date.now();
+  console.log(`[SESSION] Step atual: ${chatId} -> ${session.step}`);
+  return session;
+}
+
+function resetSession(chatId) {
+  sessions.delete(chatId);
+  console.log(`[SESSION] Sessão removida: ${chatId}`);
 }
 
 // Status messages
@@ -169,6 +335,9 @@ client.on("message", async (msg) => {
     const chat = await msg.getChat();
     if (chat.isGroup) return;
 
+    const chatId = msg.from;
+    const body = normalizeInput(msg.body).toLowerCase();
+
     // Prevenir duplicate replies
     const msgId = msg.id._serialized;
     if (processedMessages.has(msgId)) {
@@ -177,8 +346,36 @@ client.on("message", async (msg) => {
     }
     addProcessedMessage(msgId);
 
-    const contactId = msg.from;
+    const contactId = chatId;
     const messageBody = msg.body || "";
+
+    // =====================================
+    // CONTROLE DE SESSÃO
+    // =====================================
+    const session = getSession(chatId);
+    console.log(`[SESSION] Sessão ativa confirmada para ${chatId}`);
+
+    const isMenuCommand = (body === COMMAND_MENU || body === "#menu" || body === "start");
+
+    if (isMenuCommand) {
+      session.step = "MENU_INICIAL";
+      session.mode = "MENU";
+      session.data = session.data || {};
+      console.log("[COMMAND] Menu acionado:", chatId, "body=", body);
+      console.log("[STEP] Step definido para MENU_INICIAL:", chatId);
+      console.log("[SESSION] Modo MENU ativado:", chatId, "step=", session.step);
+      await sendMenuInicial(chatId);
+      return;
+    }
+
+    // Bloquear fluxo antigo quando em modo MENU
+    if (session.mode === "MENU" && !isMenuCommand) {
+      console.log("[MENU] Interceptando fluxo antigo (mode=MENU):", chatId);
+      await handleMenuFlow(chatId, body, session);
+      return;
+    }
+
+    console.log("[COMMAND] Nenhum comando:", chatId);
 
     // Função de digitação
     const delay = (ms) => new Promise((res) => setTimeout(res, ms));
