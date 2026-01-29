@@ -69,7 +69,7 @@ const statusMessages = {
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    headless: true,
+    headless: "new", // (ou false pra debugar)
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -78,7 +78,18 @@ const client = new Client({
     ],
     timeout: 60000,
   },
+
+  // 🔒 trava a versão do WhatsApp Web
+  webVersion: "2.3000.1032180192-alpha",
+
+  // 🌐 busca o HTML dessa versão no repositório de versões
+  webVersionCache: {
+    type: "remote",
+    remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
+    strict: false, // se der 404, ele tenta outra (evita quebrar tudo)
+  },
 });
+
 
 // =====================================
 // EVENTO: QR CODE
@@ -282,6 +293,14 @@ client.on("message_create", async (msg) => {
 // =====================================
 // INICIALIZAR CLIENTE WHATSAPP
 // =====================================
+client.on("loading_screen", (percent, message) => {
+  console.log("⏳ Loading screen:", percent, message);
+});
+
+client.on("auth_failure", (msg) => {
+  console.log("❌ auth_failure:", msg);
+});
+
 client.initialize().catch((err) => {
   console.error("❌ Erro ao inicializar cliente:", err.message);
   process.exit(1);

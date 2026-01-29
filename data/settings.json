@@ -1,4 +1,4 @@
 {
-  "defaultMessage": "Olá! Esta é uma mensagem default que vai ser enviada pelo tempo que você vai determinar!",
-  "defaultWindowSeconds": 86400
+  "defaultMessage": "Olá! Esta é uma mensagem default!\n\nO tempo será determinado de reset para mensagem default por você!",
+  "defaultWindowSeconds": 10
 }
