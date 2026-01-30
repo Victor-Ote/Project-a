@@ -54,6 +54,95 @@ const sessions = new Map();
 const SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutos
 const COMMAND_MENU = "menu";
 
+// =====================================
+// MULTI-TENANT POR TOKEN
+// =====================================
+const TENANTS = new Map();
+const DEFAULT_TENANT_ID = "default";
+
+function getOrCreateTenantByToken(token) {
+  let tenant = null;
+  for (const [, t] of TENANTS) {
+    if (t.token === token) {
+      tenant = t;
+      break;
+    }
+  }
+
+  if (!tenant) {
+    const tenantId = "t_" + token.slice(0, 8);
+    tenant = {
+      tenantId,
+      token,
+      config: JSON.parse(JSON.stringify(MENU_CONFIG)), // Deep clone
+      createdAt: Date.now()
+    };
+    TENANTS.set(tenantId, tenant);
+    console.log("[TENANT] Criado:", tenantId, "token=", token);
+    return tenant;
+  }
+
+  console.log("[TENANT] Encontrado:", tenant.tenantId);
+  return tenant;
+}
+
+function getTenantFromRequest(req) {
+  const { token } = req.params;
+  if (!token || token.length < 10) {
+    return { error: "Token inválido ou ausente", statusCode: 400 };
+  }
+  const tenant = getOrCreateTenantByToken(token);
+  return tenant;
+}
+
+function getTenantConfig(tenantId) {
+  console.log("[CONFIG] getTenantConfig tenantId=", tenantId);
+  if (tenantId === DEFAULT_TENANT_ID) {
+    return MENU_CONFIG; // Por enquanto, config padrão
+  }
+  const tenant = TENANTS.get(tenantId);
+  return tenant ? tenant.config : MENU_CONFIG;
+}
+
+const MENU_CONFIG = {
+  triggers: ["menu", "#menu", "start"],
+  texts: {
+    encerrado: "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente.",
+    somenteNumerosMenu: "⚠️ Responda apenas com números (1, 2, 3, 9 ou 0).",
+    somenteNumerosPlanos: "⚠️ Responda apenas com números (1, 2, 9 ou 0).",
+    opcaoInvalidaMenu: "⚠️ Opção inválida. Digite 1, 2, 3, 9 ou 0.",
+    opcaoInvalidaPlanos: "⚠️ Opção inválida. Digite 1, 2, 9 ou 0.",
+    planosBasico: "✅ Plano Básico selecionado. (placeholder)",
+    planosPro: "✅ Plano Pro selecionado. (placeholder)",
+    comoFuncionaPlaceholder: "✅ Você escolheu: Como funciona (placeholder)",
+    atendentePlaceholder: "✅ Você escolheu: Falar com atendente (placeholder)"
+  },
+  steps: {
+    MENU_INICIAL: {
+      header: "Olá! 👋\nResponda apenas com um número:",
+      options: [
+        "1️⃣ Planos",
+        "2️⃣ Como funciona",
+        "3️⃣ Falar com atendente",
+        "",
+        "9️⃣ Repetir menu",
+        "0️⃣ Encerrar"
+      ]
+    },
+    PLANOS: {
+      header: "📦 *Planos*\nResponda apenas com um número:",
+      options: [
+        "1️⃣ Plano Básico",
+        "2️⃣ Plano Pro",
+        "",
+        "9️⃣ Voltar ao menu",
+        "0️⃣ Encerrar"
+      ]
+    }
+  }
+};
+console.log("[CONFIG] MENU_CONFIG carregado. Triggers:", MENU_CONFIG.triggers.join(", "));
+
 // Função para limpar mensagens processadas após timeout
 function addProcessedMessage(msgId) {
   processedMessages.add(msgId);
@@ -67,21 +156,25 @@ function normalizeInput(input) {
 }
 
 function getMenuInicialText() {
-  return "Olá! 👋\nResponda apenas com um número:\n\n1️⃣ Planos\n2️⃣ Como funciona\n3️⃣ Falar com atendente\n\n9️⃣ Repetir menu\n0️⃣ Encerrar";
+  const { header, options } = MENU_CONFIG.steps.MENU_INICIAL;
+  return `${header}\n\n${options.join("\n")}`;
 }
 
 async function sendMenuInicial(chatId) {
   console.log("[FLOW] Enviando MENU_INICIAL:", chatId);
+  console.log("[CONFIG] Step text source: MENU_CONFIG.steps.MENU_INICIAL");
   await client.sendMessage(chatId, getMenuInicialText());
   console.log("[FLOW] MENU_INICIAL enviado:", chatId);
 }
 
 function getPlanosText() {
-  return "📦 *Planos*\nResponda apenas com um número:\n\n1️⃣ Plano Básico\n2️⃣ Plano Pro\n\n9️⃣ Voltar ao menu\n0️⃣ Encerrar";
+  const { header, options } = MENU_CONFIG.steps.PLANOS;
+  return `${header}\n\n${options.join("\n")}`;
 }
 
 async function sendPlanos(chatId) {
   console.log("[FLOW] Enviando PLANOS:", chatId);
+  console.log("[CONFIG] Step text source: MENU_CONFIG.steps.PLANOS");
   await client.sendMessage(chatId, getPlanosText());
   console.log("[FLOW] PLANOS enviado:", chatId);
 }
@@ -90,13 +183,13 @@ function isNumericOnly(body) {
   return /^[0-9]+$/.test(body);
 }
 
-async function handleMenuFlow(chatId, body, session) {
+async function handleMenuFlow(tenantId, chatId, body, session) {
   console.log("[MENU] Entrada recebida:", chatId, "body=", body, "step=", session.step);
 
   if (session.step === "MENU_INICIAL") {
     // Validar entrada numérica
     if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, "⚠️ Responda apenas com números (1, 2, 3, 9 ou 0).");
+      await client.sendMessage(chatId, MENU_CONFIG.texts.somenteNumerosMenu);
       await sendMenuInicial(chatId);
       console.log("[MENU][ERROR] Entrada não numérica no MENU_INICIAL:", chatId, body);
       return;
@@ -111,12 +204,12 @@ async function handleMenuFlow(chatId, body, session) {
         break;
 
       case "2":
-        await client.sendMessage(chatId, "✅ Você escolheu: Como funciona");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.comoFuncionaPlaceholder);
         console.log("[MENU] Escolha 2 (Como funciona):", chatId);
         break;
 
       case "3":
-        await client.sendMessage(chatId, "✅ Você escolheu: Falar com atendente");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.atendentePlaceholder);
         console.log("[MENU] Escolha 3 (Atendente):", chatId);
         break;
 
@@ -126,14 +219,14 @@ async function handleMenuFlow(chatId, body, session) {
         break;
 
       case "0":
-        await client.sendMessage(chatId, "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente.");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.encerrado);
         console.log("[MENU] Encerrar (0):", chatId);
-        resetSession(chatId);
+        resetSession(tenantId, chatId);
         console.log("[MENU] Saindo do modo MENU:", chatId);
         break;
 
       default:
-        await client.sendMessage(chatId, "⚠️ Opção inválida. Digite 1, 2, 3, 9 ou 0.");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.opcaoInvalidaMenu);
         await sendMenuInicial(chatId);
         console.log("[MENU][ERROR] Opção inválida:", chatId, body);
         break;
@@ -141,7 +234,7 @@ async function handleMenuFlow(chatId, body, session) {
   } else if (session.step === "PLANOS") {
     // Validar entrada numérica
     if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, "⚠️ Responda apenas com números (1, 2, 9 ou 0).");
+      await client.sendMessage(chatId, MENU_CONFIG.texts.somenteNumerosPlanos);
       await sendPlanos(chatId);
       console.log("[MENU][ERROR] Entrada não numérica em PLANOS:", chatId, body);
       return;
@@ -150,12 +243,12 @@ async function handleMenuFlow(chatId, body, session) {
     // Processar escolhas numéricas do PLANOS
     switch (body) {
       case "1":
-        await client.sendMessage(chatId, "✅ Plano Básico selecionado. (placeholder)");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.planosBasico);
         console.log("[PLANOS] Escolha 1 (Básico):", chatId);
         break;
 
       case "2":
-        await client.sendMessage(chatId, "✅ Plano Pro selecionado. (placeholder)");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.planosPro);
         console.log("[PLANOS] Escolha 2 (Pro):", chatId);
         break;
 
@@ -166,7 +259,7 @@ async function handleMenuFlow(chatId, body, session) {
         break;
 
       case "0":
-        await client.sendMessage(chatId, "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente.");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.encerrado);
         console.log("[MENU] Encerrar (0):", chatId);
         session.mode = null;
         session.step = "MENU_INICIAL";
@@ -174,7 +267,7 @@ async function handleMenuFlow(chatId, body, session) {
         break;
 
       default:
-        await client.sendMessage(chatId, "⚠️ Opção inválida. Digite 1, 2, 9 ou 0.");
+        await client.sendMessage(chatId, MENU_CONFIG.texts.opcaoInvalidaPlanos);
         await sendPlanos(chatId);
         console.log("[PLANOS][ERROR] Opção inválida:", chatId, body);
         break;
@@ -185,8 +278,9 @@ async function handleMenuFlow(chatId, body, session) {
 // =====================================
 // FUNÇÕES DE SESSÃO
 // =====================================
-function getSession(chatId) {
-  let session = sessions.get(chatId);
+function getSession(tenantId, chatId) {
+  const sessionKey = `${tenantId}:${chatId}`;
+  let session = sessions.get(sessionKey);
 
   // Se não existir, criar nova
   if (!session) {
@@ -195,30 +289,33 @@ function getSession(chatId) {
       data: {},
       lastMessageAt: Date.now()
     };
-    sessions.set(chatId, session);
-    console.log(`[SESSION] Nova sessão criada: ${chatId}`);
+    sessions.set(sessionKey, session);
+    console.log(`[SESSION] Nova sessão criada:`, sessionKey);
+    console.log("[SESSION] Key:", sessionKey, "step=", session.step);
     return session;
   }
 
   // Se existir, verificar expiração
   const elapsed = Date.now() - session.lastMessageAt;
   if (elapsed > SESSION_TTL_MS) {
-    console.log(`[SESSION] Sessão expirada, resetando: ${chatId}`);
+    console.log(`[SESSION] Sessão expirada, resetando:`, sessionKey);
     session.step = "MENU_INICIAL";
     session.data = {};
     session.lastMessageAt = Date.now();
+    console.log("[SESSION] Key:", sessionKey, "step=", session.step);
     return session;
   }
 
   // Atualizar lastMessageAt
   session.lastMessageAt = Date.now();
-  console.log(`[SESSION] Step atual: ${chatId} -> ${session.step}`);
+  console.log("[SESSION] Key:", sessionKey, "step=", session.step);
   return session;
 }
 
-function resetSession(chatId) {
-  sessions.delete(chatId);
-  console.log(`[SESSION] Sessão removida: ${chatId}`);
+function resetSession(tenantId, chatId) {
+  const sessionKey = `${tenantId}:${chatId}`;
+  sessions.delete(sessionKey);
+  console.log(`[SESSION] Sessão removida:`, sessionKey);
 }
 
 // Status messages
@@ -337,6 +434,7 @@ client.on("message", async (msg) => {
 
     const chatId = msg.from;
     const body = normalizeInput(msg.body).toLowerCase();
+    const tenantId = DEFAULT_TENANT_ID; // Por enquanto, hardcoded
 
     // Prevenir duplicate replies
     const msgId = msg.id._serialized;
@@ -352,10 +450,11 @@ client.on("message", async (msg) => {
     // =====================================
     // CONTROLE DE SESSÃO
     // =====================================
-    const session = getSession(chatId);
-    console.log(`[SESSION] Sessão ativa confirmada para ${chatId}`);
+    const session = getSession(tenantId, chatId);
+    console.log(`[SESSION] Sessão ativa confirmada para ${tenantId}:${chatId}`);
 
-    const isMenuCommand = (body === COMMAND_MENU || body === "#menu" || body === "start");
+    const tenantConfig = getTenantConfig(tenantId);
+    const isMenuCommand = tenantConfig.triggers.includes(body);
 
     if (isMenuCommand) {
       session.step = "MENU_INICIAL";
@@ -371,7 +470,7 @@ client.on("message", async (msg) => {
     // Bloquear fluxo antigo quando em modo MENU
     if (session.mode === "MENU" && !isMenuCommand) {
       console.log("[MENU] Interceptando fluxo antigo (mode=MENU):", chatId);
-      await handleMenuFlow(chatId, body, session);
+      await handleMenuFlow(tenantId, chatId, body, session);
       return;
     }
 
@@ -509,6 +608,14 @@ client.initialize().catch((err) => {
 io.on("connection", (socket) => {
   console.log("🌐 Cliente conectado:", socket.id);
 
+  // Evento para o cliente entrar em uma sala de tenant
+  socket.on("joinTenant", ({ token }) => {
+    const tenant = getOrCreateTenantByToken(token);
+    socket.join(tenant.tenantId);
+    socket.data.tenantId = tenant.tenantId;
+    console.log("[SOCKET] joinTenant:", socket.id, "tenantId=", tenant.tenantId);
+  });
+
   // Enviar QR atual se disponível
   if (currentQrDataUrl) {
     socket.emit("qr", { dataUrl: currentQrDataUrl });
@@ -535,6 +642,26 @@ app.get("/", (req, res) => {
 app.get("/messages", (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
 });
+
+// =====================================
+// ROTAS: MULTI-TENANT
+// =====================================
+app.get("/t/:token/health", (req, res) => {
+  const result = getTenantFromRequest(req);
+  if (result.error) {
+    return res.status(result.statusCode || 400).json(result);
+  }
+  const { tenantId, token } = result;
+  res.json({
+    ok: true,
+    tenantId,
+    tokenMasked: token.slice(0, 4) + "..."
+  });
+});
+
+// =====================================
+// ROTAS: API
+// =====================================
 
 // =====================================
 // API REST: GET RULES
