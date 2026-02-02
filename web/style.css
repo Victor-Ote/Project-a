@@ -420,3 +420,11 @@ body {
 .rules-container::-webkit-scrollbar-thumb:hover {
   background: #aaa;
 }
+
+.qr-container img {
+  max-width: 260px;
+  width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}

@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const path = require("path");
 const fs = require("fs");
 const qrcode = require("qrcode");
+const Database = require("better-sqlite3");
 const { Client, MessageMedia, LocalAuth } = require("whatsapp-web.js");
 const { findMatchingRule } = require("./src/rules/rulesStore");
 const { getSettingsSync, saveSettingsSync } = require("./src/settings/settingsStore");
@@ -23,6 +24,70 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // =====================================
+// DATABASE SQLite
+// =====================================
+const DB_FILE = path.resolve(DATA_DIR, "app.db");
+let db = null;
+
+function initDb() {
+  db = new Database(DB_FILE);
+  
+  // Criar tabelas
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tenants (
+      token TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS configs (
+      token TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  
+  console.log("[DB] SQLite iniciado em ./data/app.db");
+  console.log("[DB] Tabelas garantidas: tenants, configs");
+}
+
+async function dbGetTenant(token) {
+  const stmt = db.prepare("SELECT token, tenant_id FROM tenants WHERE token = ?");
+  const result = stmt.get(token);
+  console.log("[DB] Tenant SELECT:", token, result ? "true" : "false");
+  return result || null;
+}
+
+async function dbInsertTenant(token, tenantId) {
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO tenants (token, tenant_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+  `);
+  stmt.run(token, tenantId, now, now);
+  console.log("[DB] Tenant UPSERT:", token, tenantId);
+}
+
+async function dbGetConfig(token) {
+  const stmt = db.prepare("SELECT config_json FROM configs WHERE token = ?");
+  const result = stmt.get(token);
+  console.log("[DB] Config SELECT:", token, result ? "true" : "false");
+  return result ? result.config_json : null;
+}
+
+async function dbUpsertConfig(token, configObj) {
+  const now = new Date().toISOString();
+  const json = JSON.stringify(configObj);
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO configs (token, config_json, updated_at)
+    VALUES (?, ?, ?)
+  `);
+  stmt.run(token, json, now);
+  console.log("[DB] Config UPSERT:", token, "bytes=", json.length);
+}
+
+// =====================================
 // CONFIGURAÇÃO EXPRESS E SOCKET.IO
 // =====================================
 const app = express();
@@ -36,6 +101,8 @@ const io = new Server(httpServer, {
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "web")));
+
+initDb();
 
 // =====================================
 // VARIÁVEIS GLOBAIS DO BOT
@@ -60,7 +127,8 @@ const COMMAND_MENU = "menu";
 const TENANTS = new Map();
 const DEFAULT_TENANT_ID = "default";
 
-function getOrCreateTenantByToken(token) {
+async function getOrCreateTenantByToken(token) {
+  // Verificar se já está em memória
   let tenant = null;
   for (const [, t] of TENANTS) {
     if (t.token === token) {
@@ -68,38 +136,71 @@ function getOrCreateTenantByToken(token) {
       break;
     }
   }
-
-  if (!tenant) {
-    const tenantId = "t_" + token.slice(0, 8);
-    tenant = {
-      tenantId,
-      token,
-      config: JSON.parse(JSON.stringify(MENU_CONFIG)), // Deep clone
-      createdAt: Date.now()
-    };
-    TENANTS.set(tenantId, tenant);
-    console.log("[TENANT] Criado:", tenantId, "token=", token);
+  
+  if (tenant) {
+    console.log("[TENANT] Encontrado em memória:", tenant.tenantId);
     return tenant;
   }
 
-  console.log("[TENANT] Encontrado:", tenant.tenantId);
+  // Buscar no banco de dados
+  const dbTenant = await dbGetTenant(token);
+  
+  if (dbTenant) {
+    // Tenant existe no DB, carregar config
+    const tenantId = dbTenant.tenant_id;
+    const configJson = await dbGetConfig(token);
+    let config;
+    
+    if (configJson) {
+      config = JSON.parse(configJson);
+    } else {
+      // Criar config padrão se não existir
+      config = JSON.parse(JSON.stringify(MENU_CONFIG));
+      await dbUpsertConfig(token, config);
+    }
+    
+    tenant = {
+      tenantId,
+      token,
+      config,
+      createdAt: Date.now()
+    };
+    TENANTS.set(tenantId, tenant);
+    console.log("[TENANT] DB load complete:", tenantId, "token=", token);
+    return tenant;
+  }
+
+  // Criar novo tenant
+  const tenantId = "t_" + token.slice(0, 8);
+  const config = JSON.parse(JSON.stringify(MENU_CONFIG));
+  
+  // Persistir no DB
+  await dbInsertTenant(token, tenantId);
+  await dbUpsertConfig(token, config);
+  
+  tenant = {
+    tenantId,
+    token,
+    config,
+    createdAt: Date.now()
+  };
+  TENANTS.set(tenantId, tenant);
+  console.log("[TENANT] Criado:", tenantId, "token=", token);
+  console.log("[TENANT] DB load complete:", tenantId, "token=", token);
   return tenant;
 }
 
-function getTenantFromRequest(req) {
+async function getTenantFromRequest(req) {
   const { token } = req.params;
   if (!token || token.length < 10) {
     return { error: "Token inválido ou ausente", statusCode: 400 };
   }
-  const tenant = getOrCreateTenantByToken(token);
+  const tenant = await getOrCreateTenantByToken(token);
   return tenant;
 }
 
 function getTenantConfig(tenantId) {
-  console.log("[CONFIG] getTenantConfig tenantId=", tenantId);
-  if (tenantId === DEFAULT_TENANT_ID) {
-    return MENU_CONFIG; // Por enquanto, config padrão
-  }
+  console.log("[CONFIG] getTenantConfig tenantId=", tenantId, "source=TENANTS");
   const tenant = TENANTS.get(tenantId);
   return tenant ? tenant.config : MENU_CONFIG;
 }
@@ -155,27 +256,27 @@ function normalizeInput(input) {
   return (input || "").trim();
 }
 
-function getMenuInicialText() {
-  const { header, options } = MENU_CONFIG.steps.MENU_INICIAL;
+function getMenuInicialText(config) {
+  const { header, options } = config.steps.MENU_INICIAL;
   return `${header}\n\n${options.join("\n")}`;
 }
 
-async function sendMenuInicial(chatId) {
+async function sendMenuInicial(chatId, config) {
   console.log("[FLOW] Enviando MENU_INICIAL:", chatId);
   console.log("[CONFIG] Step text source: MENU_CONFIG.steps.MENU_INICIAL");
-  await client.sendMessage(chatId, getMenuInicialText());
+  await client.sendMessage(chatId, getMenuInicialText(config));
   console.log("[FLOW] MENU_INICIAL enviado:", chatId);
 }
 
-function getPlanosText() {
-  const { header, options } = MENU_CONFIG.steps.PLANOS;
+function getPlanosText(config) {
+  const { header, options } = config.steps.PLANOS;
   return `${header}\n\n${options.join("\n")}`;
 }
 
-async function sendPlanos(chatId) {
+async function sendPlanos(chatId, config) {
   console.log("[FLOW] Enviando PLANOS:", chatId);
   console.log("[CONFIG] Step text source: MENU_CONFIG.steps.PLANOS");
-  await client.sendMessage(chatId, getPlanosText());
+  await client.sendMessage(chatId, getPlanosText(config));
   console.log("[FLOW] PLANOS enviado:", chatId);
 }
 
@@ -183,14 +284,14 @@ function isNumericOnly(body) {
   return /^[0-9]+$/.test(body);
 }
 
-async function handleMenuFlow(tenantId, chatId, body, session) {
+async function handleMenuFlow(tenantId, chatId, body, session, config) {
   console.log("[MENU] Entrada recebida:", chatId, "body=", body, "step=", session.step);
 
   if (session.step === "MENU_INICIAL") {
     // Validar entrada numérica
     if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, MENU_CONFIG.texts.somenteNumerosMenu);
-      await sendMenuInicial(chatId);
+      await client.sendMessage(chatId, config.texts.somenteNumerosMenu);
+      await sendMenuInicial(chatId, config);
       console.log("[MENU][ERROR] Entrada não numérica no MENU_INICIAL:", chatId, body);
       return;
     }
@@ -200,42 +301,42 @@ async function handleMenuFlow(tenantId, chatId, body, session) {
       case "1":
         session.step = "PLANOS";
         console.log("[STEP] Alterando step:", chatId, "=>", session.step);
-        await sendPlanos(chatId);
+        await sendPlanos(chatId, config);
         break;
 
       case "2":
-        await client.sendMessage(chatId, MENU_CONFIG.texts.comoFuncionaPlaceholder);
+        await client.sendMessage(chatId, config.texts.comoFuncionaPlaceholder);
         console.log("[MENU] Escolha 2 (Como funciona):", chatId);
         break;
 
       case "3":
-        await client.sendMessage(chatId, MENU_CONFIG.texts.atendentePlaceholder);
+        await client.sendMessage(chatId, config.texts.atendentePlaceholder);
         console.log("[MENU] Escolha 3 (Atendente):", chatId);
         break;
 
       case "9":
-        await sendMenuInicial(chatId);
+        await sendMenuInicial(chatId, config);
         console.log("[MENU] Repetir menu (9):", chatId);
         break;
 
       case "0":
-        await client.sendMessage(chatId, MENU_CONFIG.texts.encerrado);
+        await client.sendMessage(chatId, config.texts.encerrado);
         console.log("[MENU] Encerrar (0):", chatId);
         resetSession(tenantId, chatId);
         console.log("[MENU] Saindo do modo MENU:", chatId);
         break;
 
       default:
-        await client.sendMessage(chatId, MENU_CONFIG.texts.opcaoInvalidaMenu);
-        await sendMenuInicial(chatId);
+        await client.sendMessage(chatId, config.texts.opcaoInvalidaMenu);
+        await sendMenuInicial(chatId, config);
         console.log("[MENU][ERROR] Opção inválida:", chatId, body);
         break;
     }
   } else if (session.step === "PLANOS") {
     // Validar entrada numérica
     if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, MENU_CONFIG.texts.somenteNumerosPlanos);
-      await sendPlanos(chatId);
+      await client.sendMessage(chatId, config.texts.somenteNumerosPlanos);
+      await sendPlanos(chatId, config);
       console.log("[MENU][ERROR] Entrada não numérica em PLANOS:", chatId, body);
       return;
     }
@@ -243,23 +344,23 @@ async function handleMenuFlow(tenantId, chatId, body, session) {
     // Processar escolhas numéricas do PLANOS
     switch (body) {
       case "1":
-        await client.sendMessage(chatId, MENU_CONFIG.texts.planosBasico);
+        await client.sendMessage(chatId, config.texts.planosBasico);
         console.log("[PLANOS] Escolha 1 (Básico):", chatId);
         break;
 
       case "2":
-        await client.sendMessage(chatId, MENU_CONFIG.texts.planosPro);
+        await client.sendMessage(chatId, config.texts.planosPro);
         console.log("[PLANOS] Escolha 2 (Pro):", chatId);
         break;
 
       case "9":
         session.step = "MENU_INICIAL";
         console.log("[ACTION] Voltar ao MENU_INICIAL:", chatId);
-        await sendMenuInicial(chatId);
+        await sendMenuInicial(chatId, config);
         break;
 
       case "0":
-        await client.sendMessage(chatId, MENU_CONFIG.texts.encerrado);
+        await client.sendMessage(chatId, config.texts.encerrado);
         console.log("[MENU] Encerrar (0):", chatId);
         session.mode = null;
         session.step = "MENU_INICIAL";
@@ -267,8 +368,8 @@ async function handleMenuFlow(tenantId, chatId, body, session) {
         break;
 
       default:
-        await client.sendMessage(chatId, MENU_CONFIG.texts.opcaoInvalidaPlanos);
-        await sendPlanos(chatId);
+        await client.sendMessage(chatId, config.texts.opcaoInvalidaPlanos);
+        await sendPlanos(chatId, config);
         console.log("[PLANOS][ERROR] Opção inválida:", chatId, body);
         break;
     }
@@ -374,8 +475,13 @@ client.on("qr", (qr) => {
   }).then(dataUrl => {
     currentQrDataUrl = dataUrl;
     console.log("✅ QR Code convertido - emitindo aos clientes");
-    io.emit("qr", { dataUrl: dataUrl });
-    io.emit("status", {
+    const tenantId = DEFAULT_TENANT_ID;
+    console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "qr");
+    io.to(tenantId).emit("qr", dataUrl);
+    io.emit("qr", dataUrl);
+    console.log("[SOCKET] QR emit fallback global. tenantId=", tenantId, "clients=", io.engine.clientsCount);
+    console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "status");
+    io.to(tenantId).emit("status", {
       status: currentStatus,
       message: statusMessages[currentStatus]
     });
@@ -390,7 +496,9 @@ client.on("qr", (qr) => {
 client.on("authenticated", () => {
   console.log("🔐 Autenticado");
   currentStatus = "authenticated";
-  io.emit("status", {
+  const tenantId = DEFAULT_TENANT_ID;
+  console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "status");
+  io.to(tenantId).emit("status", {
     status: currentStatus,
     message: statusMessages[currentStatus]
   });
@@ -403,7 +511,9 @@ client.on("ready", () => {
   console.log("✅ Tudo certo! WhatsApp conectado.");
   currentStatus = "ready";
   currentQrDataUrl = null; // Limpar QR após conexão
-  io.emit("status", {
+  const tenantId = DEFAULT_TENANT_ID;
+  console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "status");
+  io.to(tenantId).emit("status", {
     status: currentStatus,
     message: statusMessages[currentStatus]
   });
@@ -415,7 +525,9 @@ client.on("ready", () => {
 client.on("disconnected", (reason) => {
   console.log("⚠️ Desconectado:", reason);
   currentStatus = "disconnected";
-  io.emit("status", {
+  const tenantId = DEFAULT_TENANT_ID;
+  console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "status");
+  io.to(tenantId).emit("status", {
     status: currentStatus,
     message: statusMessages[currentStatus]
   });
@@ -463,14 +575,14 @@ client.on("message", async (msg) => {
       console.log("[COMMAND] Menu acionado:", chatId, "body=", body);
       console.log("[STEP] Step definido para MENU_INICIAL:", chatId);
       console.log("[SESSION] Modo MENU ativado:", chatId, "step=", session.step);
-      await sendMenuInicial(chatId);
+      await sendMenuInicial(chatId, tenantConfig);
       return;
     }
 
     // Bloquear fluxo antigo quando em modo MENU
     if (session.mode === "MENU" && !isMenuCommand) {
       console.log("[MENU] Interceptando fluxo antigo (mode=MENU):", chatId);
-      await handleMenuFlow(tenantId, chatId, body, session);
+      await handleMenuFlow(tenantId, chatId, body, session, tenantConfig);
       return;
     }
 
@@ -609,8 +721,8 @@ io.on("connection", (socket) => {
   console.log("🌐 Cliente conectado:", socket.id);
 
   // Evento para o cliente entrar em uma sala de tenant
-  socket.on("joinTenant", ({ token }) => {
-    const tenant = getOrCreateTenantByToken(token);
+  socket.on("joinTenant", async ({ token }) => {
+    const tenant = await getOrCreateTenantByToken(token);
     socket.join(tenant.tenantId);
     socket.data.tenantId = tenant.tenantId;
     console.log("[SOCKET] joinTenant:", socket.id, "tenantId=", tenant.tenantId);
@@ -618,11 +730,15 @@ io.on("connection", (socket) => {
 
   // Enviar QR atual se disponível
   if (currentQrDataUrl) {
-    socket.emit("qr", { dataUrl: currentQrDataUrl });
+    const tenantId = socket.data.tenantId || DEFAULT_TENANT_ID;
+    console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "qr");
+    io.to(tenantId).emit("qr", { dataUrl: currentQrDataUrl });
   }
 
   // Enviar status atual
-  socket.emit("status", {
+  const tenantId = socket.data.tenantId || DEFAULT_TENANT_ID;
+  console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "status");
+  io.to(tenantId).emit("status", {
     status: currentStatus,
     message: statusMessages[currentStatus]
   });
@@ -646,8 +762,8 @@ app.get("/messages", (req, res) => {
 // =====================================
 // ROTAS: MULTI-TENANT
 // =====================================
-app.get("/t/:token/health", (req, res) => {
-  const result = getTenantFromRequest(req);
+app.get("/t/:token/health", async (req, res) => {
+  const result = await getTenantFromRequest(req);
   if (result.error) {
     return res.status(result.statusCode || 400).json(result);
   }
@@ -662,6 +778,49 @@ app.get("/t/:token/health", (req, res) => {
 // =====================================
 // ROTAS: API
 // =====================================
+
+// =====================================
+// API REST: MULTI-TENANT CONFIG
+// =====================================
+app.get("/t/:token/config", async (req, res) => {
+  try {
+    const result = await getTenantFromRequest(req);
+    if (result.error) {
+      return res.status(result.statusCode || 400).json(result);
+    }
+    const tenant = await getOrCreateTenantByToken(result.token);
+    console.log("[API] GET config:", tenant.tenantId);
+    res.json(tenant.config);
+  } catch (err) {
+    console.error("❌ Erro ao obter config:", err.message);
+    res.status(500).json({ error: "Erro ao obter config" });
+  }
+});
+
+app.put("/t/:token/config", async (req, res) => {
+  try {
+    const result = await getTenantFromRequest(req);
+    if (result.error) {
+      return res.status(result.statusCode || 400).json(result);
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== "object" || Object.keys(body).length === 0) {
+      return res.status(400).json({ error: "Body deve ser um objeto válido" });
+    }
+
+    const tenant = await getOrCreateTenantByToken(result.token);
+    tenant.config = body;
+    await dbUpsertConfig(result.token, body);
+
+    console.log("[API] PUT config:", tenant.tenantId);
+    console.log("[CONFIG] Runtime atualizado para tenant:", tenant.tenantId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ Erro ao atualizar config:", err.message);
+    res.status(500).json({ error: "Erro ao atualizar config" });
+  }
+});
 
 // =====================================
 // API REST: GET RULES
