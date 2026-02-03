@@ -42,14 +42,44 @@ function initDb() {
     );
     
     CREATE TABLE IF NOT EXISTS configs (
-      token TEXT PRIMARY KEY,
-      config_json TEXT NOT NULL,
+      tenant_id TEXT PRIMARY KEY,
+      menu_json TEXT,
+      rules_json TEXT,
+      settings_json TEXT,
       updated_at TEXT NOT NULL
-    );
+  );
+
   `);
   
   console.log("[DB] SQLite iniciado em ./data/app.db");
   console.log("[DB] Tabelas garantidas: tenants, configs");
+  
+  // =====================================
+  // MIGRAÇÃO: Verificar e adicionar coluna tenant_id se necessário
+  // =====================================
+  try {
+    // Verificar se coluna tenant_id já existe
+    const tableInfo = db.prepare("PRAGMA table_info(configs)").all();
+    const hasTenantId = tableInfo.some(col => col.name === "tenant_id");
+    
+    if (!hasTenantId) {
+      console.log("[DB][MIGRATION] Adicionando coluna tenant_id à tabela configs");
+      db.exec("ALTER TABLE configs ADD COLUMN tenant_id TEXT;");
+      console.log("[DB][MIGRATION] tenant_id added");
+    } else {
+      console.log("[DB][MIGRATION] tenant_id already exists");
+    }
+  } catch (err) {
+    console.error("[DB][MIGRATION][ERROR]", err.message);
+  }
+  
+  // Criar índice único se não existir
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_configs_tenant_id ON configs(tenant_id);");
+    console.log("[DB][MIGRATION] Índice idx_configs_tenant_id garantido");
+  } catch (err) {
+    console.error("[DB][MIGRATION][ERROR] ao criar índice:", err.message);
+  }
 }
 
 async function dbGetTenant(token) {
@@ -69,22 +99,98 @@ async function dbInsertTenant(token, tenantId) {
   console.log("[DB] Tenant UPSERT:", token, tenantId);
 }
 
-async function dbGetConfig(token) {
-  const stmt = db.prepare("SELECT config_json FROM configs WHERE token = ?");
-  const result = stmt.get(token);
-  console.log("[DB] Config SELECT:", token, result ? "true" : "false");
-  return result ? result.config_json : null;
+function dbGetConfig(token) {
+  // 1) acha tenant_id pelo token
+  const rowTenant = db
+    .prepare("SELECT tenant_id FROM tenants WHERE token = ?")
+    .get(token);
+
+  if (!rowTenant?.tenant_id) {
+    return null;
+  }
+
+  // 2) pega config pelo tenant_id no schema novo
+  const row = db
+    .prepare("SELECT menu_json, rules_json, settings_json, updated_at FROM configs WHERE tenant_id = ?")
+    .get(rowTenant.tenant_id);
+
+  if (!row) return null;
+
+  return {
+    tenantId: rowTenant.tenant_id,
+    menu: row.menu_json ? safeJsonParse(row.menu_json) : null,
+    rules: row.rules_json ? safeJsonParse(row.rules_json) : null,
+    settings: row.settings_json ? safeJsonParse(row.settings_json) : null,
+    updated_at: row.updated_at,
+  };
 }
 
+function safeJsonParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+
 async function dbUpsertConfig(token, configObj) {
-  const now = new Date().toISOString();
-  const json = JSON.stringify(configObj);
+  // DEPRECATED: Use dbUpsertConfigByTenantId instead
+  // Manter para compatibilidade com código antigo, mas redirecionar para o novo método
+  const rowTenant = db
+    .prepare("SELECT tenant_id FROM tenants WHERE token = ?")
+    .get(token);
+
+  if (!rowTenant?.tenant_id) {
+    console.error("[DB] Config UPSERT failed: token não encontrado em tenants");
+    return;
+  }
+
+  // Se configObj for completo (com __rules e __settings), extrair componentes
+  let menu = configObj;
+  let rules = RULES_DEFAULT;
+  let settings = SETTINGS_DEFAULT;
+
+  if (configObj?.__rules || configObj?.__settings) {
+    menu = Object.assign({}, configObj);
+    delete menu.__rules;
+    delete menu.__settings;
+    rules = configObj.__rules ?? RULES_DEFAULT;
+    settings = configObj.__settings ?? SETTINGS_DEFAULT;
+  }
+
+  await dbUpsertConfigByTenantId(rowTenant.tenant_id, menu, rules, settings);
+  console.log("[DB] Config UPSERT (via dbUpsertConfig):", token, "tenantId=", rowTenant.tenant_id);
+}
+
+function dbGetConfigByTenantId(tenantId) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO configs (token, config_json, updated_at)
-    VALUES (?, ?, ?)
+    SELECT menu_json, rules_json, settings_json, updated_at FROM configs WHERE tenant_id = ?
   `);
-  stmt.run(token, json, now);
-  console.log("[DB] Config UPSERT:", token, "bytes=", json.length);
+  const result = stmt.get(tenantId);
+  if (result) {
+    console.log("[DB] Config SELECT by tenantId:", tenantId, "found");
+    return {
+      menu: result.menu_json ? safeJsonParse(result.menu_json) : null,
+      rules: result.rules_json ? safeJsonParse(result.rules_json) : null,
+      settings: result.settings_json ? safeJsonParse(result.settings_json) : null,
+      updated_at: result.updated_at || null
+    };
+  }
+  console.log("[DB] Config SELECT by tenantId:", tenantId, "not found");
+  return { menu: null, rules: null, settings: null, updated_at: null };
+}
+
+async function dbUpsertConfigByTenantId(tenantId, menu, rules, settings) {
+  const now = new Date().toISOString();
+  const menuJson = menu ? JSON.stringify(menu) : null;
+  const rulesJson = rules ? JSON.stringify(rules) : null;
+  const settingsJson = settings ? JSON.stringify(settings) : null;
+  
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO configs (tenant_id, menu_json, rules_json, settings_json, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  stmt.run(tenantId, menuJson, rulesJson, settingsJson, now);
+  console.log("[DB] Config UPSERT by tenantId:", tenantId, 
+    "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0, 
+    "settings=", !!settings);
 }
 
 // =====================================
@@ -162,16 +268,15 @@ async function getOrCreateTenantByToken(token) {
   if (dbTenant) {
     // Tenant existe no DB, carregar config
     const tenantId = dbTenant.tenant_id;
-    const configJson = await dbGetConfig(token);
-    let config;
+    const dbConfigObj = await dbGetConfig(token); // Retorna objeto, NÃO string
     
-    if (configJson) {
-      config = JSON.parse(configJson);
-    } else {
-      // Criar config padrão se não existir
-      config = JSON.parse(JSON.stringify(MENU_CONFIG));
-      await dbUpsertConfig(token, config);
-    }
+    // Carregar com fallbacks corretos (dbGetConfig retorna objeto com menu/rules/settings)
+    const menu = dbConfigObj?.menu ?? JSON.parse(JSON.stringify(MENU_CONFIG));
+    const rules = dbConfigObj?.rules ?? RULES_DEFAULT;
+    const settings = dbConfigObj?.settings ?? SETTINGS_DEFAULT;
+    
+    // Montar config completa
+    const config = Object.assign({}, menu, { __rules: rules, __settings: settings });
     
     tenant = {
       tenantId,
@@ -180,17 +285,22 @@ async function getOrCreateTenantByToken(token) {
       createdAt: Date.now()
     };
     TENANTS.set(tenantId, tenant);
-    console.log("[TENANT] DB load complete:", tenantId, "token=", token);
+    console.log("[TENANT] DB load complete:", tenantId, "token=", token, 
+      "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0);
     return tenant;
   }
 
   // Criar novo tenant
   const tenantId = "t_" + token.slice(0, 8);
-  const config = JSON.parse(JSON.stringify(MENU_CONFIG));
+  const menu = JSON.parse(JSON.stringify(MENU_CONFIG));
+  const rules = RULES_DEFAULT;
+  const settings = SETTINGS_DEFAULT;
   
-  // Persistir no DB
+  // Persistir no DB (tenant + config completa)
   await dbInsertTenant(token, tenantId);
-  await dbUpsertConfig(token, config);
+  await dbUpsertConfigByTenantId(tenantId, menu, rules, settings);
+  
+  const config = Object.assign({}, menu, { __rules: rules, __settings: settings });
   
   tenant = {
     tenantId,
@@ -200,7 +310,8 @@ async function getOrCreateTenantByToken(token) {
   };
   TENANTS.set(tenantId, tenant);
   console.log("[TENANT] Criado:", tenantId, "token=", token);
-  console.log("[TENANT] DB load complete:", tenantId, "token=", token);
+  console.log("[TENANT] DB save complete:", tenantId, "token=", token,
+    "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0);
   return tenant;
 }
 
@@ -214,9 +325,214 @@ async function getTenantFromRequest(req) {
 }
 
 function getTenantConfig(tenantId) {
-  console.log("[CONFIG] getTenantConfig tenantId=", tenantId, "source=TENANTS");
-  const tenant = TENANTS.get(tenantId);
-  return tenant ? tenant.config : MENU_CONFIG;
+  // Tentar carregar do DB primeiro (sync)
+  const dbConfig = dbGetConfigByTenantId(tenantId);
+  
+  const hasDbData = dbConfig.menu || dbConfig.rules || dbConfig.settings;
+  
+  if (hasDbData) {
+    const menu = dbConfig.menu || MENU_CONFIG;
+    const rules = dbConfig.rules || RULES_DEFAULT;
+    const settings = dbConfig.settings || SETTINGS_DEFAULT;
+    
+    console.log("[CONFIG] getTenantConfig tenantId=", tenantId, "source=DB",
+      "rules=", Array.isArray(rules) ? rules.length : 0,
+      "defaultMessageLen=", settings?.defaultMessage?.length || 0);
+    
+    // Compatível com o fluxo antigo do bot
+    return Object.assign({}, menu, { __rules: rules, __settings: settings });
+  }
+  
+  console.log("[CONFIG] getTenantConfig tenantId=", tenantId, "source=DEFAULT",
+    "rules=", RULES_DEFAULT.length, "defaultMessageLen=", SETTINGS_DEFAULT.defaultMessage.length);
+  
+  return Object.assign({}, MENU_CONFIG, { __rules: RULES_DEFAULT, __settings: SETTINGS_DEFAULT });
+}
+
+// =====================================
+// ANEXAR HANDLERS DE AUTOMAÇÃO AO CLIENT
+// =====================================
+function attachBotHandlers(client, tenantId) {
+  // Evitar duplicação de handlers
+  if (client.__handlersAttached) {
+    console.log("[BOT] Handlers já anexados tenant=", tenantId);
+    return;
+  }
+  client.__handlersAttached = true;
+  console.log("[BOT] Handlers attached tenant=", tenantId);
+
+  client.on("message", async (msg) => {
+    try {
+      // ❌ IGNORA QUALQUER COISA QUE NÃO SEJA CONVERSA PRIVADA
+      if (!msg.from || msg.from.endsWith("@g.us")) return;
+
+      const chat = await msg.getChat();
+      if (chat.isGroup) return;
+
+      const chatId = msg.from;
+      const body = normalizeInput(msg.body).toLowerCase();
+
+      console.log("[BOT] msg received tenant=", tenantId, "from=", msg.from, "body=", msg.body);
+
+      // Prevenir duplicate replies
+      const msgId = msg.id._serialized;
+      if (processedMessages.has(msgId)) {
+        console.log("⏭️  Mensagem já processada (duplicate):", msgId);
+        return;
+      }
+      addProcessedMessage(msgId);
+
+      const contactId = chatId;
+      const messageBody = msg.body || "";
+
+      // =====================================
+      // CONTROLE DE SESSÃO
+      // =====================================
+      const session = getSession(tenantId, chatId);
+      console.log(`[SESSION] Sessão ativa confirmada para ${tenantId}:${chatId}`);
+
+      const tenantConfig = getTenantConfig(tenantId);
+      const triggers = tenantConfig.triggers || [];
+      const isMenuCommand = triggers.includes(body);
+
+      if (isMenuCommand) {
+        session.step = "MENU_INICIAL";
+        session.mode = "MENU";
+        session.data = session.data || {};
+        console.log("[COMMAND] Menu acionado:", chatId, "body=", body);
+        console.log("[STEP] Step definido para MENU_INICIAL:", chatId);
+        console.log("[SESSION] Modo MENU ativado:", chatId, "step=", session.step);
+        try {
+          await sendMenuInicial(client, tenantId, chatId, tenantConfig);
+        } catch (e) {
+          console.error("[FLOW][ERROR] tenant=", tenantId, e?.message, e?.stack);
+        }
+        return;
+      }
+
+      // Bloquear fluxo antigo quando em modo MENU
+      if (session.mode === "MENU" && !isMenuCommand) {
+        console.log("[MENU] Interceptando fluxo antigo (mode=MENU):", chatId);
+        try {
+          await handleMenuFlow(client, tenantId, chatId, body, session, tenantConfig);
+        } catch (e) {
+          console.error("[FLOW][ERROR] tenant=", tenantId, e?.message, e?.stack);
+        }
+        return;
+      }
+
+      console.log("[COMMAND] Nenhum comando:", chatId);
+
+      // Função de digitação
+      const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+      const typing = async () => {
+        await delay(2000);
+        await chat.sendStateTyping();
+        await delay(2000);
+      };
+
+      let responseSent = false;
+
+      // =====================================
+      // TENTAR CORRESPONDÊNCIA COM REGRAS
+      // =====================================
+      const matchedRule = findMatchingRule(messageBody);
+      
+      if (matchedRule) {
+        // Uma regra foi correspondida - usar a resposta da regra
+        console.log(`📨 [${contactId}] Usando resposta da regra: "${matchedRule.sent}"`);
+        console.log("[BOT] responding tenant=", tenantId, "to=", msg.from);
+        await typing();
+        await client.sendMessage(msg.from, matchedRule.sent);
+        responseSent = true;
+        markActivity(contactId); // Registrar após enviar
+      } 
+      else {
+        // =====================================
+        // TENTAR ENVIAR MENSAGEM DEFAULT
+        // =====================================
+        const settings = getSettingsSync();
+        const defaultMessage = settings.defaultMessage.trim();
+
+        if (defaultMessage) {
+          // Determinar janela: ENV > settings > default (24h)
+          const windowSeconds = parseInt(process.env.DEFAULT_WINDOW_SECONDS, 10) || 
+                               settings.defaultWindowSeconds || 
+                               (24 * 60 * 60);
+
+          // Verificar se deve enviar default (janela configurável + ignorar msg atual)
+          const canSendDefault = await shouldSendDefault(chat, contactId, { 
+            windowSeconds,
+            ignoreMsgId: msgId 
+          });
+
+          if (canSendDefault) {
+            console.log(`💬 [${contactId}] Enviando mensagem default (janela: ${Math.floor(windowSeconds / 60)} min)`);
+            console.log("[BOT] responding tenant=", tenantId, "to=", msg.from);
+            await typing();
+            await client.sendMessage(msg.from, defaultMessage);
+            responseSent = true;
+            markDefaultSent(contactId); // Marca default enviado + atividade
+          }
+        }
+
+        // =====================================
+        // FALLBACK: MENSAGEM INICIAL DE BOAS-VINDAS (LEGADO)
+        // =====================================
+        if (!responseSent) {
+          const texto = messageBody.trim().toLowerCase();
+          if (/^(menu|oi|olá|ola|bom dia|boa tarde|boa noite|#automação)$/i.test(texto)) {
+            await typing();
+
+            const hora = new Date().getHours();
+            let saudacao = "Olá";
+
+            if (hora >= 5 && hora < 12) saudacao = "Bom dia";
+            else if (hora >= 12 && hora < 18) saudacao = "Boa tarde";
+            else saudacao = "Boa noite";
+
+            console.log("[BOT] responding tenant=", tenantId, "to=", msg.from);
+            await client.sendMessage(
+              msg.from,
+              `${saudacao}! 👋\n\n` +
+              `Essa mensagem foi enviada automaticamente pelo robô 🤖\n\n`
+            );
+            responseSent = true;
+            markActivity(contactId); // Registrar após enviar
+          }
+        }
+      }
+
+      // Registrar atividade inbound no final (contato passou a estar dentro da janela)
+      if (!responseSent) {
+        markActivity(contactId);
+      }
+    } catch (err) {
+      console.error("❌ Erro ao processar mensagem tenant:", tenantId, err.message);
+    }
+  });
+
+  // Também anexar message_create para marcar atividade de envios manuais
+  client.on("message_create", async (msg) => {
+    try {
+      // Apenas mensagens enviadas por mim (bot ou usuário manual)
+      if (!msg.fromMe) return;
+
+      // Ignorar grupos
+      if (msg.to && msg.to.endsWith("@g.us")) return;
+
+      // Determinar o contato destinatário
+      const contactId = msg.to || msg.from;
+      
+      if (contactId && !contactId.endsWith("@g.us")) {
+        // Marcar atividade (mensagens enviadas manualmente também renovam janela)
+        markActivity(contactId);
+        console.log(`📤 [${contactId}] Mensagem enviada (manual ou bot) - atividade marcada`);
+      }
+    } catch (err) {
+      console.error("❌ Erro ao processar message_create:", err.message);
+    }
+  });
 }
 
 async function getOrCreateClientForTenant(tenant) {
@@ -309,6 +625,9 @@ async function getOrCreateClientForTenant(tenant) {
     .then(() => console.log("[WPP] initialize called tenant:", tenantId))
     .catch(e => console.log("[WPP][ERROR] initialize tenant:", tenantId, e));
 
+  // Anexar handlers de automação
+  attachBotHandlers(client, tenantId);
+
   return client;
 }
 
@@ -351,6 +670,13 @@ const MENU_CONFIG = {
 };
 console.log("[CONFIG] MENU_CONFIG carregado. Triggers:", MENU_CONFIG.triggers.join(", "));
 
+// Defaults para regras e settings
+const RULES_DEFAULT = [];
+const SETTINGS_DEFAULT = {
+  defaultMessage: "👋 Olá! Em breve retornamos em contato.",
+  windowSeconds: 24 * 60 * 60
+};
+
 // Função para limpar mensagens processadas após timeout
 function addProcessedMessage(msgId) {
   processedMessages.add(msgId);
@@ -364,25 +690,43 @@ function normalizeInput(input) {
 }
 
 function getMenuInicialText(config) {
-  const { header, options } = config.steps.MENU_INICIAL;
+  if (!config?.steps?.MENU_INICIAL) {
+    console.warn("[CONFIG] getMenuInicialText: MENU_INICIAL não encontrado em config.steps");
+    return "Menu indisponível";
+  }
+  const step = config.steps.MENU_INICIAL;
+  if (typeof step === "string") {
+    return step;
+  }
+  const { header, options } = step;
   return `${header}\n\n${options.join("\n")}`;
 }
 
-async function sendMenuInicial(chatId, config) {
+async function sendMenuInicial(client, tenantId, chatId, config) {
   console.log("[FLOW] Enviando MENU_INICIAL:", chatId);
-  console.log("[CONFIG] Step text source: MENU_CONFIG.steps.MENU_INICIAL");
+  console.log("[CONFIG] Step text source:", config?.steps?.MENU_INICIAL ? "CONFIG" : "DEFAULT", "tenant=", tenantId);
+  console.log("[FLOW] sendStep using client=", !!client, "tenant=", tenantId, "to=", chatId, "step=MENU_INICIAL");
   await client.sendMessage(chatId, getMenuInicialText(config));
   console.log("[FLOW] MENU_INICIAL enviado:", chatId);
 }
 
 function getPlanosText(config) {
-  const { header, options } = config.steps.PLANOS;
+  if (!config?.steps?.PLANOS) {
+    console.warn("[CONFIG] getPlanosText: PLANOS não encontrado em config.steps");
+    return "Planos indisponíveis";
+  }
+  const step = config.steps.PLANOS;
+  if (typeof step === "string") {
+    return step;
+  }
+  const { header, options } = step;
   return `${header}\n\n${options.join("\n")}`;
 }
 
-async function sendPlanos(chatId, config) {
+async function sendPlanos(client, tenantId, chatId, config) {
   console.log("[FLOW] Enviando PLANOS:", chatId);
-  console.log("[CONFIG] Step text source: MENU_CONFIG.steps.PLANOS");
+  console.log("[CONFIG] Step text source:", config?.steps?.PLANOS ? "CONFIG" : "DEFAULT", "tenant=", tenantId);
+  console.log("[FLOW] sendStep using client=", !!client, "tenant=", tenantId, "to=", chatId, "step=PLANOS");
   await client.sendMessage(chatId, getPlanosText(config));
   console.log("[FLOW] PLANOS enviado:", chatId);
 }
@@ -391,14 +735,17 @@ function isNumericOnly(body) {
   return /^[0-9]+$/.test(body);
 }
 
-async function handleMenuFlow(tenantId, chatId, body, session, config) {
+async function handleMenuFlow(client, tenantId, chatId, body, session, config) {
   console.log("[MENU] Entrada recebida:", chatId, "body=", body, "step=", session.step);
+  
+  // Extrair texts do menu config (padrão ou do DB)
+  const texts = config.texts || {};
 
   if (session.step === "MENU_INICIAL") {
     // Validar entrada numérica
     if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, config.texts.somenteNumerosMenu);
-      await sendMenuInicial(chatId, config);
+      await client.sendMessage(chatId, texts.somenteNumerosMenu || "⚠️ Responda apenas com números");
+      await sendMenuInicial(client, tenantId, chatId, config);
       console.log("[MENU][ERROR] Entrada não numérica no MENU_INICIAL:", chatId, body);
       return;
     }
@@ -408,42 +755,42 @@ async function handleMenuFlow(tenantId, chatId, body, session, config) {
       case "1":
         session.step = "PLANOS";
         console.log("[STEP] Alterando step:", chatId, "=>", session.step);
-        await sendPlanos(chatId, config);
+        await sendPlanos(client, tenantId, chatId, config);
         break;
 
       case "2":
-        await client.sendMessage(chatId, config.texts.comoFuncionaPlaceholder);
+        await client.sendMessage(chatId, texts.comoFuncionaPlaceholder || "Como funciona");
         console.log("[MENU] Escolha 2 (Como funciona):", chatId);
         break;
 
       case "3":
-        await client.sendMessage(chatId, config.texts.atendentePlaceholder);
+        await client.sendMessage(chatId, texts.atendentePlaceholder || "Falar com atendente");
         console.log("[MENU] Escolha 3 (Atendente):", chatId);
         break;
 
       case "9":
-        await sendMenuInicial(chatId, config);
+        await sendMenuInicial(client, tenantId, chatId, config);
         console.log("[MENU] Repetir menu (9):", chatId);
         break;
 
       case "0":
-        await client.sendMessage(chatId, config.texts.encerrado);
+        await client.sendMessage(chatId, texts.encerrado || "✅ Atendimento encerrado");
         console.log("[MENU] Encerrar (0):", chatId);
         resetSession(tenantId, chatId);
         console.log("[MENU] Saindo do modo MENU:", chatId);
         break;
 
       default:
-        await client.sendMessage(chatId, config.texts.opcaoInvalidaMenu);
-        await sendMenuInicial(chatId, config);
+        await client.sendMessage(chatId, texts.opcaoInvalidaMenu || "⚠️ Opção inválida");
+        await sendMenuInicial(client, tenantId, chatId, config);
         console.log("[MENU][ERROR] Opção inválida:", chatId, body);
         break;
     }
   } else if (session.step === "PLANOS") {
     // Validar entrada numérica
     if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, config.texts.somenteNumerosPlanos);
-      await sendPlanos(chatId, config);
+      await client.sendMessage(chatId, texts.somenteNumerosPlanos || "⚠️ Responda apenas com números");
+      await sendPlanos(client, tenantId, chatId, config);
       console.log("[MENU][ERROR] Entrada não numérica em PLANOS:", chatId, body);
       return;
     }
@@ -451,23 +798,23 @@ async function handleMenuFlow(tenantId, chatId, body, session, config) {
     // Processar escolhas numéricas do PLANOS
     switch (body) {
       case "1":
-        await client.sendMessage(chatId, config.texts.planosBasico);
+        await client.sendMessage(chatId, texts.planosBasico || "✅ Plano Básico selecionado");
         console.log("[PLANOS] Escolha 1 (Básico):", chatId);
         break;
 
       case "2":
-        await client.sendMessage(chatId, config.texts.planosPro);
+        await client.sendMessage(chatId, texts.planosPro || "✅ Plano Pro selecionado");
         console.log("[PLANOS] Escolha 2 (Pro):", chatId);
         break;
 
       case "9":
         session.step = "MENU_INICIAL";
         console.log("[ACTION] Voltar ao MENU_INICIAL:", chatId);
-        await sendMenuInicial(chatId, config);
+        await sendMenuInicial(client, tenantId, chatId, config);
         break;
 
       case "0":
-        await client.sendMessage(chatId, config.texts.encerrado);
+        await client.sendMessage(chatId, texts.encerrado || "✅ Atendimento encerrado");
         console.log("[MENU] Encerrar (0):", chatId);
         session.mode = null;
         session.step = "MENU_INICIAL";
@@ -475,8 +822,8 @@ async function handleMenuFlow(tenantId, chatId, body, session, config) {
         break;
 
       default:
-        await client.sendMessage(chatId, config.texts.opcaoInvalidaPlanos);
-        await sendPlanos(chatId, config);
+        await client.sendMessage(chatId, texts.opcaoInvalidaPlanos || "⚠️ Opção inválida");
+        await sendPlanos(client, tenantId, chatId, config);
         console.log("[PLANOS][ERROR] Opção inválida:", chatId, body);
         break;
     }
@@ -600,6 +947,15 @@ client.on("qr", (qr) => {
     console.error("❌ Erro ao converter QR code:", err.message);
   });
 });
+*/
+
+/*
+// =====================================
+// CLIENTE GLOBAL ANTIGO - ATIVO MAS OBSOLETO (USAR attachBotHandlers INSTEAD)
+// =====================================
+// Todos esses handlers são ATIVO mas NÃO DEVEM SER USADOS
+// O código agora é per-tenant em attachBotHandlers(client, tenantId)
+// Deixar comentado para evitar conflitos com tenants
 
 // =====================================
 // EVENTO: AUTENTICADO
@@ -823,7 +1179,7 @@ client.on("auth_failure", (msg) => {
 client.initialize().catch((err) => {
   console.error("❌ Erro ao inicializar cliente:", err.message);
   process.exit(1);
-});
+
 */
 
 // =====================================
@@ -887,7 +1243,12 @@ app.get("/t/:token", async (req, res) => {
       return res.status(result.statusCode || 400).json(result);
     }
     
+    // result.token contém o token do request
     const tenant = await getOrCreateTenantByToken(result.token);
+    if (!tenant) {
+      return res.status(400).json({ error: "Falha ao criar/carregar tenant" });
+    }
+    
     console.log("[ROUTE] /t/:token opened tenantId=", tenant.tenantId);
     
     // Garantir que o client foi iniciado
@@ -895,7 +1256,7 @@ app.get("/t/:token", async (req, res) => {
     
     res.sendFile(path.join(__dirname, "web", "index.html"));
   } catch (err) {
-    console.error("❌ Erro na rota /t/:token:", err.message);
+    console.error("❌ Erro na rota /t/:token:", err.message, err.stack);
     res.status(500).send("Erro ao carregar página");
   }
 });
@@ -923,22 +1284,45 @@ app.get("/t/:token/health", async (req, res) => {
 // =====================================
 // API REST: MULTI-TENANT CONFIG
 // =====================================
-app.get("/t/:token/config", async (req, res) => {
+// Handler GET config (runtime em memória)
+const getConfigHandler = async (req, res) => {
   try {
     const result = await getTenantFromRequest(req);
     if (result.error) {
       return res.status(result.statusCode || 400).json(result);
     }
     const tenant = await getOrCreateTenantByToken(result.token);
-    console.log("[API] GET config:", tenant.tenantId);
+    console.log("[API] GET config (runtime):", tenant.tenantId);
     res.json(tenant.config);
   } catch (err) {
     console.error("❌ Erro ao obter config:", err.message);
     res.status(500).json({ error: "Erro ao obter config" });
   }
-});
+};
 
-app.put("/t/:token/config", async (req, res) => {
+// Handler GET config (DB)
+const getConfigDbHandler = async (req, res) => {
+  try {
+    const result = await getTenantFromRequest(req);
+    if (result.error) {
+      return res.status(result.statusCode || 400).json(result);
+    }
+    const tenant = await getOrCreateTenantByToken(result.token);
+    const dbConfig = dbGetConfigByTenantId(tenant.tenantId);
+    console.log("[API] GET config (DB):", tenant.tenantId);
+    res.json(dbConfig);
+  } catch (err) {
+    console.error("❌ Erro ao obter config DB:", err.message);
+    res.status(500).json({ error: "Erro ao obter config DB" });
+  }
+};
+
+// Rotas GET config
+app.get("/t/:token/config", getConfigHandler);
+app.get("/api/t/:token/config", getConfigDbHandler);
+
+// Handler PUT config (aceita novo e legado)
+const putConfigHandler = async (req, res) => {
   try {
     const result = await getTenantFromRequest(req);
     if (result.error) {
@@ -951,8 +1335,20 @@ app.put("/t/:token/config", async (req, res) => {
     }
 
     const tenant = await getOrCreateTenantByToken(result.token);
-    tenant.config = body;
-    await dbUpsertConfig(result.token, body);
+
+    // Normalizar body (novo ou legado)
+    let menu = body.menu ? body.menu : Object.assign({}, body);
+    if (!body.menu) {
+      delete menu.__rules;
+      delete menu.__settings;
+    }
+    const rules = body.rules || body.__rules || [];
+    const settings = body.settings || body.__settings || SETTINGS_DEFAULT;
+
+    await dbUpsertConfigByTenantId(tenant.tenantId, menu, rules, settings);
+
+    // Atualizar runtime
+    tenant.config = Object.assign({}, menu, { __rules: rules, __settings: settings });
 
     console.log("[API] PUT config:", tenant.tenantId);
     console.log("[CONFIG] Runtime atualizado para tenant:", tenant.tenantId);
@@ -960,6 +1356,61 @@ app.put("/t/:token/config", async (req, res) => {
   } catch (err) {
     console.error("❌ Erro ao atualizar config:", err.message);
     res.status(500).json({ error: "Erro ao atualizar config" });
+  }
+};
+
+// Rotas PUT config (original + alias)
+app.put("/t/:token/config", putConfigHandler);
+app.put("/api/t/:token/config", putConfigHandler);
+
+// =====================================
+// API REST: SALVAR CONFIG ESTRUTURADA POR TENANT
+// =====================================
+app.post("/api/t/:token/config", async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token || token.length < 10) {
+      return res.status(400).json({ error: "Token inválido ou ausente" });
+    }
+
+    const { menu, rules, settings } = req.body;
+    
+    // Validações
+    if (!menu || typeof menu !== "object") {
+      return res.status(400).json({ error: "menu deve ser um objeto" });
+    }
+    if (!Array.isArray(rules)) {
+      return res.status(400).json({ error: "rules deve ser um array" });
+    }
+    if (!settings || typeof settings !== "object") {
+      return res.status(400).json({ error: "settings deve ser um objeto" });
+    }
+    if (!settings.defaultMessage || typeof settings.defaultMessage !== "string") {
+      return res.status(400).json({ error: "settings.defaultMessage deve ser string" });
+    }
+    if (typeof settings.windowSeconds !== "number") {
+      return res.status(400).json({ error: "settings.windowSeconds deve ser number" });
+    }
+
+    // Resolver tenant
+    const tenant = await getOrCreateTenantByToken(token);
+    if (!tenant || tenant.error) {
+      return res.status(400).json({ error: "Token inválido" });
+    }
+
+    const tenantId = tenant.tenantId;
+
+    // Persistir no DB
+    await dbUpsertConfigByTenantId(tenantId, menu, rules, settings);
+
+    console.log("[API] saveConfig token=", token, "tenantId=", tenantId,
+      "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0,
+      "settings=", settings?.defaultMessage?.length, settings?.windowSeconds);
+
+    res.json({ ok: true, tenantId });
+  } catch (err) {
+    console.error("❌ Erro ao salvar config:", err.message);
+    res.status(500).json({ error: "Erro ao salvar config" });
   }
 });
 
@@ -1078,7 +1529,30 @@ httpServer.listen(PORT, () => {
 // =====================================
 process.on("SIGINT", () => {
   console.log("\n🛑 Encerrando servidor...");
-  client.destroy();
+  
+  // Destruir todos os clients de tenant
+  for (const [tenantId, cached] of CLIENTS_MAP.entries()) {
+    if (cached.client) {
+      console.log("[SHUTDOWN] Destruindo client para tenant:", tenantId);
+      try {
+        cached.client.destroy();
+      } catch (err) {
+        console.error("[SHUTDOWN] Erro ao destruir client:", err.message);
+      }
+    }
+  }
+  
+  // Fechar database
+  if (db) {
+    console.log("[SHUTDOWN] Fechando database...");
+    try {
+      db.close();
+    } catch (err) {
+      console.error("[SHUTDOWN] Erro ao fechar database:", err.message);
+    }
+  }
+  
+  // Fechar servidor HTTP
   httpServer.close(() => {
     console.log("✅ Servidor encerrado");
     process.exit(0);
