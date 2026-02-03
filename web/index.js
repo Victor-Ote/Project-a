@@ -1,7 +1,25 @@
 document.addEventListener("DOMContentLoaded", () => {
   console.log("✅ index.js carregado + DOM pronto");
 
-  const socket = io();
+  // Extrair token da URL (/t/:token)
+  const pathname = window.location.pathname;
+  let token = null;
+  
+  if (pathname.startsWith("/t/")) {
+    token = pathname.split("/t/")[1];
+    console.log("[FRONT] token extraído da URL:", token);
+  }
+
+  if (!token) {
+    console.error("❌ [FRONT] Nenhum token encontrado na URL");
+    document.getElementById("status-text").textContent = "Erro: token ausente";
+    return;
+  }
+
+  // Criar socket com token na query string
+  const socket = io({
+    query: { token }
+  });
 
   const qrContainer = document.getElementById("qr-container");
   const statusText = document.getElementById("status-text");
@@ -40,6 +58,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (statusText) statusText.textContent = `Status: ${status}`;
   });
 
-  socket.on("connect", () => console.log("🟢 [FRONT] socket conectado:", socket.id));
+  socket.on("connect", () => console.log("🟢 [FRONT] socket conectado:", socket.id, "token=", token));
   socket.on("disconnect", (r) => console.log("🔴 [FRONT] socket desconectado:", r));
 });

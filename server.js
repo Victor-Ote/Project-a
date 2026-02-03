@@ -125,7 +125,21 @@ const COMMAND_MENU = "menu";
 // MULTI-TENANT POR TOKEN
 // =====================================
 const TENANTS = new Map();
-const DEFAULT_TENANT_ID = "default";
+const CLIENTS_MAP = new Map();
+
+function emitTenant(tenantId, eventName, payload) {
+  io.to(tenantId).emit(eventName, payload);
+  const clientsInRoom = io.sockets.adapter.rooms.get(tenantId)?.size || 0;
+  console.log("[SOCKET] emitTenant", tenantId, "event=", eventName, "clientsInRoom=", clientsInRoom);
+}
+
+function ensureAuthDir() {
+  const authBasePath = path.resolve(__dirname, ".wwebjs_auth");
+  if (!fs.existsSync(authBasePath)) {
+    fs.mkdirSync(authBasePath, { recursive: true });
+  }
+  console.log("[WPP] Auth base ok:", authBasePath);
+}
 
 async function getOrCreateTenantByToken(token) {
   // Verificar se já está em memória
@@ -203,6 +217,99 @@ function getTenantConfig(tenantId) {
   console.log("[CONFIG] getTenantConfig tenantId=", tenantId, "source=TENANTS");
   const tenant = TENANTS.get(tenantId);
   return tenant ? tenant.config : MENU_CONFIG;
+}
+
+async function getOrCreateClientForTenant(tenant) {
+  const tenantId = tenant.tenantId;
+  const cached = CLIENTS_MAP.get(tenantId);
+  
+  if (cached && cached.client) {
+    console.log("[WPP] Reutilizando client para tenant:", tenantId, "status=", cached.status);
+    return cached.client;
+  }
+
+  console.log("[WPP] Criando novo client para tenant:", tenantId);
+  ensureAuthDir();
+
+  const client = new Client({
+    authStrategy: new LocalAuth({ clientId: "tenant_" + tenantId }),
+    puppeteer: {
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu"
+      ],
+      timeout: 60000
+    },
+    webVersion: "2.3000.1032180192-alpha",
+    webVersionCache: {
+      type: "remote",
+      remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
+      strict: false
+    }
+  });
+
+  CLIENTS_MAP.set(tenantId, { client, status: "initializing", lastQrAt: null });
+
+  // Listeners
+  client.on("qr", async (qr) => {
+    console.log("[WPP] qr recebido tenant:", tenantId);
+    
+    try {
+      const dataUrl = await qrcode.toDataURL(qr, {
+        errorCorrectionLevel: "H",
+        type: "image/png",
+        width: 300,
+        margin: 1,
+        color: {
+          dark: "#000000",
+          light: "#FFFFFF"
+        }
+      });
+      
+      const cached = CLIENTS_MAP.get(tenantId);
+      if (cached) {
+        cached.status = "qr";
+        cached.lastQrAt = Date.now();
+      }
+      
+      emitTenant(tenantId, "qr", dataUrl);
+      emitTenant(tenantId, "status", "QR code recebido");
+    } catch (err) {
+      console.error("❌ Erro ao converter QR code tenant:", tenantId, err.message);
+    }
+  });
+
+  client.on("authenticated", () => {
+    console.log("[WPP] authenticated tenant:", tenantId);
+    const cached = CLIENTS_MAP.get(tenantId);
+    if (cached) cached.status = "authenticated";
+    emitTenant(tenantId, "status", "Autenticado");
+  });
+
+  client.on("ready", () => {
+    console.log("[WPP] ready tenant:", tenantId);
+    const cached = CLIENTS_MAP.get(tenantId);
+    if (cached) cached.status = "ready";
+    emitTenant(tenantId, "status", "✅ Tudo certo! WhatsApp conectado.");
+  });
+
+  client.on("disconnected", (reason) => {
+    console.log("[WPP] disconnected tenant:", tenantId, "reason=", reason);
+    const cached = CLIENTS_MAP.get(tenantId);
+    if (cached) cached.status = "disconnected";
+    emitTenant(tenantId, "status", "Desconectado: " + reason);
+  });
+
+  // Inicializar
+  console.log("[WPP] initialize start tenant:", tenantId);
+  client.initialize()
+    .then(() => console.log("[WPP] initialize called tenant:", tenantId))
+    .catch(e => console.log("[WPP][ERROR] initialize tenant:", tenantId, e));
+
+  return client;
 }
 
 const MENU_CONFIG = {
@@ -428,12 +535,13 @@ const statusMessages = {
 };
 
 // =====================================
-// CONFIGURAÇÃO DO CLIENTE WHATSAPP
+// CONFIGURAÇÃO DO CLIENTE WHATSAPP (REMOVIDO - AGORA É POR TENANT)
 // =====================================
+/*
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    headless: "new", // (ou false pra debugar)
+    headless: "new",
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -442,18 +550,21 @@ const client = new Client({
     ],
     timeout: 60000,
   },
-
-  // 🔒 trava a versão do WhatsApp Web
   webVersion: "2.3000.1032180192-alpha",
-
-  // 🌐 busca o HTML dessa versão no repositório de versões
   webVersionCache: {
     type: "remote",
     remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
-    strict: false, // se der 404, ele tenta outra (evita quebrar tudo)
+    strict: false,
   },
 });
+*/
 
+/*
+// =====================================
+// CLIENTE GLOBAL ANTIGO - REMOVIDO (AGORA É POR TENANT)
+// =====================================
+// Todo código abaixo foi migrado para getOrCreateClientForTenant()
+// Cada tenant tem seu próprio client em CLIENTS_MAP
 
 // =====================================
 // EVENTO: QR CODE
@@ -713,38 +824,48 @@ client.initialize().catch((err) => {
   console.error("❌ Erro ao inicializar cliente:", err.message);
   process.exit(1);
 });
+*/
 
 // =====================================
 // SOCKET.IO: CONEXÃO DO CLIENTE
 // =====================================
-io.on("connection", (socket) => {
-  console.log("🌐 Cliente conectado:", socket.id);
-
-  // Evento para o cliente entrar em uma sala de tenant
-  socket.on("joinTenant", async ({ token }) => {
-    const tenant = await getOrCreateTenantByToken(token);
-    socket.join(tenant.tenantId);
-    socket.data.tenantId = tenant.tenantId;
-    console.log("[SOCKET] joinTenant:", socket.id, "tenantId=", tenant.tenantId);
-  });
-
-  // Enviar QR atual se disponível
-  if (currentQrDataUrl) {
-    const tenantId = socket.data.tenantId || DEFAULT_TENANT_ID;
-    console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "qr");
-    io.to(tenantId).emit("qr", { dataUrl: currentQrDataUrl });
+io.on("connection", async (socket) => {
+  const token = socket.handshake.query?.token;
+  
+  // Validar presença de token
+  if (!token) {
+    console.log("[SOCKET] ❌ connect sem token, id=", socket.id, "query=", socket.handshake.query);
+    socket.disconnect(true);
+    return;
   }
 
-  // Enviar status atual
-  const tenantId = socket.data.tenantId || DEFAULT_TENANT_ID;
-  console.log("[SOCKET] Emitindo para tenant:", tenantId, "event=", "status");
-  io.to(tenantId).emit("status", {
-    status: currentStatus,
-    message: statusMessages[currentStatus]
-  });
+  // Resolver tenant pelo token
+  const tenant = await getOrCreateTenantByToken(token);
+  if (!tenant || tenant.error) {
+    console.log("[SOCKET] ❌ token inválido", token, "socket=", socket.id);
+    socket.disconnect(true);
+    return;
+  }
+
+  // Entrar na sala do tenant (ISOLAMENTO)
+  socket.join(tenant.tenantId);
+  console.log("[SOCKET] ✅ socket joined tenant", tenant.tenantId, "socket=", socket.id);
+
+  // Enviar status/QR se já existir client cached
+  const cached = CLIENTS_MAP.get(tenant.tenantId);
+  if (cached) {
+    if (cached.qrDataUrl) {
+      console.log("[SOCKET] enviando QR cached para tenant", tenant.tenantId);
+      socket.emit("qr", cached.qrDataUrl);
+    }
+    if (cached.status) {
+      console.log("[SOCKET] enviando status cached para tenant", tenant.tenantId, "status=", cached.status);
+      socket.emit("status", cached.status);
+    }
+  }
 
   socket.on("disconnect", () => {
-    console.log("🌐 Cliente desconectado:", socket.id);
+    console.log("🌐 Cliente desconectado:", socket.id, "tenant=", tenant.tenantId);
   });
 });
 
@@ -757,6 +878,26 @@ app.get("/", (req, res) => {
 
 app.get("/messages", (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
+});
+
+app.get("/t/:token", async (req, res) => {
+  try {
+    const result = await getTenantFromRequest(req);
+    if (result.error) {
+      return res.status(result.statusCode || 400).json(result);
+    }
+    
+    const tenant = await getOrCreateTenantByToken(result.token);
+    console.log("[ROUTE] /t/:token opened tenantId=", tenant.tenantId);
+    
+    // Garantir que o client foi iniciado
+    await getOrCreateClientForTenant(tenant);
+    
+    res.sendFile(path.join(__dirname, "web", "index.html"));
+  } catch (err) {
+    console.error("❌ Erro na rota /t/:token:", err.message);
+    res.status(500).send("Erro ao carregar página");
+  }
 });
 
 // =====================================
