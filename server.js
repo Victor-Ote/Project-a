@@ -873,6 +873,52 @@ function resetSession(tenantId, chatId) {
   console.log(`[SESSION] Sessão removida:`, sessionKey);
 }
 
+// =====================================
+// FUNÇÕES DE DEBUG: SESSIONS
+// =====================================
+function getSessionsByTenantId(tenantId) {
+  const result = [];
+  
+  for (const [sessionKey, session] of sessions.entries()) {
+    // sessionKey formato: "tenantId:chatId"
+    const [keyTenantId, chatId] = sessionKey.split(":");
+    
+    if (keyTenantId === tenantId) {
+      result.push({
+        chatId,
+        step: session.step || "MENU_INICIAL",
+        mode: session.mode || null,
+        lastMessageAt: session.lastMessageAt || null,
+        updatedAt: new Date(session.lastMessageAt || Date.now()).toISOString()
+      });
+    }
+  }
+  
+  return result;
+}
+
+function clearSessionsByTenantId(tenantId) {
+  let cleared = 0;
+  const keysToDelete = [];
+  
+  for (const [sessionKey] of sessions.entries()) {
+    // sessionKey formato: "tenantId:chatId"
+    const [keyTenantId] = sessionKey.split(":");
+    
+    if (keyTenantId === tenantId) {
+      keysToDelete.push(sessionKey);
+    }
+  }
+  
+  for (const sessionKey of keysToDelete) {
+    sessions.delete(sessionKey);
+    cleared++;
+  }
+  
+  console.log(`[SESSION] Removidas ${cleared} sessões do tenantId:`, tenantId);
+  return cleared;
+}
+
 // Status messages
 const statusMessages = {
   waiting_qr: "Aguardando QR code",
@@ -1411,6 +1457,96 @@ app.post("/api/t/:token/config", async (req, res) => {
   } catch (err) {
     console.error("❌ Erro ao salvar config:", err.message);
     res.status(500).json({ error: "Erro ao salvar config" });
+  }
+});
+
+// =====================================
+// API REST: DEBUG - SESSIONS (LIST)
+// =====================================
+app.get("/api/t/:token/sessions", async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    // Validar formato do token
+    if (!token || token.length < 10) {
+      console.warn("[API] token inválido para sessions (formato):", token);
+      return res.status(400).json({ 
+        ok: false, 
+        error: "TOKEN_INVALID", 
+        token,
+        message: "Token deve ter no mínimo 10 caracteres"
+      });
+    }
+
+    // Validar se token existe no banco (NÃO criar automaticamente)
+    const rowTenant = db.prepare("SELECT tenant_id FROM tenants WHERE token = ?").get(token);
+    
+    if (!rowTenant || !rowTenant.tenant_id) {
+      console.warn("[API] token inválido para sessions:", token);
+      return res.status(404).json({ 
+        ok: false, 
+        error: "TOKEN_INVALID", 
+        token
+      });
+    }
+
+    const tenantId = rowTenant.tenant_id;
+    const sessionsList = getSessionsByTenantId(tenantId);
+
+    console.log("[API] GET sessions:", tenantId, "count=", sessionsList.length);
+    res.json({
+      tenantId,
+      count: sessionsList.length,
+      sessions: sessionsList
+    });
+  } catch (err) {
+    console.error("❌ Erro ao listar sessões:", err.message);
+    res.status(500).json({ error: "Erro ao listar sessões" });
+  }
+});
+
+// =====================================
+// API REST: DEBUG - SESSIONS (CLEAR)
+// =====================================
+app.post("/api/t/:token/sessions/clear", async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    // Validar formato do token
+    if (!token || token.length < 10) {
+      console.warn("[API] token inválido para sessions/clear (formato):", token);
+      return res.status(400).json({ 
+        ok: false, 
+        error: "TOKEN_INVALID", 
+        token,
+        message: "Token deve ter no mínimo 10 caracteres"
+      });
+    }
+
+    // Validar se token existe no banco (NÃO criar automaticamente)
+    const rowTenant = db.prepare("SELECT tenant_id FROM tenants WHERE token = ?").get(token);
+    
+    if (!rowTenant || !rowTenant.tenant_id) {
+      console.warn("[API] token inválido para sessions/clear:", token);
+      return res.status(404).json({ 
+        ok: false, 
+        error: "TOKEN_INVALID", 
+        token
+      });
+    }
+
+    const tenantId = rowTenant.tenant_id;
+    const cleared = clearSessionsByTenantId(tenantId);
+
+    console.log("[API] CLEAR sessions:", tenantId, "cleared=", cleared);
+    res.json({
+      ok: true,
+      tenantId,
+      cleared
+    });
+  } catch (err) {
+    console.error("❌ Erro ao limpar sessões:", err.message);
+    res.status(500).json({ error: "Erro ao limpar sessões" });
   }
 });
 

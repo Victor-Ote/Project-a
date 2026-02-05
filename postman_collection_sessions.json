@@ -1,0 +1,161 @@
+{
+  "info": {
+    "name": "Debug Sessions API",
+    "description": "Endpoints para listar e limpar sessões do bot multi-tenant",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Sessions - GET (List)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:3000/api/t/mytoken123456/sessions",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "t", "mytoken123456", "sessions"]
+        },
+        "description": "Lista todas as sessões ativas de um tenant.\n\nResolve o token para tenantId na tabela tenants.\n\nRetorna:\n- tenantId: identificador do tenant\n- count: número de sessões ativas\n- sessions: array de sessões com chatId, step, mode, lastMessageAt, updatedAt"
+      },
+      "response": [
+        {
+          "name": "Success - With Sessions",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/api/t/mytoken123456/sessions",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "t", "mytoken123456", "sessions"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"tenantId\": \"t_mytoken\",\n  \"count\": 2,\n  \"sessions\": [\n    {\n      \"chatId\": \"5521987654321@c.us\",\n      \"step\": \"PLANOS\",\n      \"mode\": \"MENU\",\n      \"lastMessageAt\": 1706990400000,\n      \"updatedAt\": \"2026-02-04T12:00:00.000Z\"\n    },\n    {\n      \"chatId\": \"5521998765432@c.us\",\n      \"step\": \"MENU_INICIAL\",\n      \"mode\": \"MENU\",\n      \"lastMessageAt\": 1706990450000,\n      \"updatedAt\": \"2026-02-04T12:00:50.000Z\"\n    }\n  ]\n}"
+        },
+        {
+          "name": "Success - No Sessions",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/api/t/mytoken123456/sessions",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "t", "mytoken123456", "sessions"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"tenantId\": \"t_mytoken\",\n  \"count\": 0,\n  \"sessions\": []\n}"
+        },
+        {
+          "name": "Error - Token Not Found",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/api/t/invalidtoken/sessions",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "t", "invalidtoken", "sessions"]
+            }
+          },
+          "status": "Not Found",
+          "code": 404,
+          "body": "{\n  \"error\": \"Token não encontrado\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Sessions - POST (Clear)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": ""
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/t/mytoken123456/sessions/clear",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["api", "t", "mytoken123456", "sessions", "clear"]
+        },
+        "description": "Remove todas as sessões ativas de um tenant.\n\nResolve o token para tenantId na tabela tenants.\nLimpa APENAS sessões do tenantId informado (não global).\n\nRetorna:\n- ok: true se sucesso\n- tenantId: identificador do tenant\n- cleared: número de sessões removidas"
+      },
+      "response": [
+        {
+          "name": "Success - Sessions Cleared",
+          "originalRequest": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/t/mytoken123456/sessions/clear",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "t", "mytoken123456", "sessions", "clear"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"ok\": true,\n  \"tenantId\": \"t_mytoken\",\n  \"cleared\": 2\n}"
+        },
+        {
+          "name": "Success - No Sessions to Clear",
+          "originalRequest": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/t/mytoken123456/sessions/clear",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "t", "mytoken123456", "sessions", "clear"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"ok\": true,\n  \"tenantId\": \"t_mytoken\",\n  \"cleared\": 0\n}"
+        },
+        {
+          "name": "Error - Token Not Found",
+          "originalRequest": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/t/invalidtoken/sessions/clear",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "t", "invalidtoken", "sessions", "clear"]
+            }
+          },
+          "status": "Not Found",
+          "code": 404,
+          "body": "{\n  \"error\": \"Token não encontrado\"\n}"
+        }
+      ]
+    }
+  ]
+}
