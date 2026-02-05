@@ -1,0 +1,249 @@
+{
+  "entryTriggers": ["menu", "#menu", "start", "oi", "olá"],
+  "homeStep": "MENU_INICIAL",
+  "steps": {
+    "MENU_INICIAL": {
+      "message": "Olá! 👋 Bem-vindo ao nosso atendimento.\n\nEscolha uma opção:\n\n1️⃣ Conhecer nossos planos\n2️⃣ Como funciona\n3️⃣ Falar com atendente\n4️⃣ Dúvidas frequentes\n\n9️⃣ Repetir menu\n0️⃣ Encerrar atendimento",
+      "routes": {
+        "1": {
+          "type": "GOTO",
+          "to": "PLANOS"
+        },
+        "2": {
+          "type": "GOTO",
+          "to": "COMO_FUNCIONA"
+        },
+        "3": {
+          "type": "REPLY",
+          "text": "✅ Aguarde, estou transferindo você para um atendente humano.\n\nEm breve alguém irá responder!"
+        },
+        "4": {
+          "type": "GOTO",
+          "to": "FAQ"
+        },
+        "9": {
+          "type": "HOME"
+        },
+        "0": {
+          "type": "END",
+          "text": "✅ Atendimento encerrado.\n\nQuando precisar, digite 'menu' novamente. Até logo! 👋"
+        },
+        "menu": {
+          "type": "HOME"
+        },
+        "voltar": {
+          "type": "HOME"
+        },
+        "sair": {
+          "type": "END",
+          "text": "✅ Até logo! Digite 'menu' quando quiser voltar."
+        }
+      }
+    },
+    "PLANOS": {
+      "message": "📦 *Nossos Planos*\n\nEscolha o plano ideal para você:\n\n1️⃣ Plano Básico - R$ 50/mês\n   • 100 mensagens/dia\n   • 1 atendente\n   • Suporte email\n\n2️⃣ Plano Pro - R$ 150/mês\n   • Mensagens ilimitadas\n   • 5 atendentes\n   • Suporte prioritário\n\n3️⃣ Plano Enterprise - Sob consulta\n   • Recursos customizados\n   • Atendentes ilimitados\n   • Gerente dedicado\n\n9️⃣ Voltar ao menu\n0️⃣ Encerrar",
+      "routes": {
+        "1": {
+          "type": "GOTO",
+          "to": "PLANO_BASICO"
+        },
+        "2": {
+          "type": "GOTO",
+          "to": "PLANO_PRO"
+        },
+        "3": {
+          "type": "GOTO",
+          "to": "PLANO_ENTERPRISE"
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "END",
+          "text": "✅ Atendimento encerrado. Volte sempre!"
+        },
+        "menu": {
+          "type": "HOME"
+        }
+      }
+    },
+    "PLANO_BASICO": {
+      "message": "💎 *Plano Básico - R$ 50/mês*\n\nVocê terá:\n✅ 100 mensagens automáticas por dia\n✅ 1 atendente conectado\n✅ Suporte via email (resposta em 24h)\n✅ Relatórios básicos\n✅ Sem contrato de fidelidade\n\n*Como deseja prosseguir?*\n\n1️⃣ Contratar agora\n2️⃣ Tirar dúvidas\n9️⃣ Ver outros planos\n0️⃣ Voltar ao menu",
+      "routes": {
+        "1": {
+          "type": "REPLY",
+          "text": "✅ Perfeito! Para contratar o Plano Básico:\n\n👉 Acesse: https://exemplo.com/plano-basico\n\nOu fale com nosso comercial:\n📞 (11) 9999-9999\n📧 vendas@exemplo.com\n\nEm breve entraremos em contato!"
+        },
+        "2": {
+          "type": "REPLY",
+          "text": "💬 Dúvidas sobre o Plano Básico?\n\nEnvie sua pergunta que responderemos em instantes, ou fale com um atendente digitando 'atendente'."
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "HOME"
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "menu": {
+          "type": "HOME"
+        },
+        "atendente": {
+          "type": "REPLY",
+          "text": "✅ Transferindo para atendente..."
+        }
+      }
+    },
+    "PLANO_PRO": {
+      "message": "🚀 *Plano Pro - R$ 150/mês*\n\nVocê terá:\n✅ Mensagens automáticas ILIMITADAS\n✅ Até 5 atendentes simultâneos\n✅ Suporte prioritário via WhatsApp\n✅ Relatórios avançados\n✅ Integração com CRM\n✅ Sem contrato de fidelidade\n\n*Como deseja prosseguir?*\n\n1️⃣ Contratar agora\n2️⃣ Testar grátis por 7 dias\n3️⃣ Comparar com outros planos\n9️⃣ Voltar\n0️⃣ Menu principal",
+      "routes": {
+        "1": {
+          "type": "REPLY",
+          "text": "✅ Excelente escolha! Plano Pro:\n\n👉 Acesse: https://exemplo.com/plano-pro\n\nOu fale com especialista:\n📞 (11) 9999-9999\n📧 vendas@exemplo.com"
+        },
+        "2": {
+          "type": "REPLY",
+          "text": "🎁 Trial de 7 dias GRÁTIS!\n\nPreencha o formulário:\n👉 https://exemplo.com/trial\n\nSem compromisso, cancele quando quiser."
+        },
+        "3": {
+          "type": "BACK"
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "HOME"
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "menu": {
+          "type": "HOME"
+        }
+      }
+    },
+    "PLANO_ENTERPRISE": {
+      "message": "🏢 *Plano Enterprise*\n\nSolução personalizada para grandes empresas:\n\n✅ Recursos sob medida\n✅ Atendentes ilimitados\n✅ API dedicada\n✅ Gerente de conta exclusivo\n✅ SLA garantido\n✅ Treinamento da equipe\n\n💰 *Valor:* Sob consulta\n\n*Próximo passo:*\n\n1️⃣ Agendar apresentação\n2️⃣ Receber proposta por email\n9️⃣ Ver outros planos\n0️⃣ Menu principal",
+      "routes": {
+        "1": {
+          "type": "REPLY",
+          "text": "📅 Agende uma apresentação:\n\n👉 https://exemplo.com/agendar\n\nOu ligue agora:\n📞 (11) 9999-9999 (Comercial Enterprise)"
+        },
+        "2": {
+          "type": "REPLY",
+          "text": "📧 Enviaremos proposta personalizada!\n\nPreencha seus dados:\n👉 https://exemplo.com/proposta\n\nRetornaremos em até 24h."
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "HOME"
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "menu": {
+          "type": "HOME"
+        }
+      }
+    },
+    "COMO_FUNCIONA": {
+      "message": "🤖 *Como funciona nosso sistema?*\n\n1️⃣ Você conecta seu WhatsApp\n2️⃣ Configura respostas automáticas\n3️⃣ Define regras e fluxos\n4️⃣ Sistema responde automaticamente\n5️⃣ Transfere para humano quando necessário\n\n*Vantagens:*\n✅ Atendimento 24/7\n✅ Resposta instantânea\n✅ Reduz até 80% do trabalho manual\n✅ Relatórios em tempo real\n\n*O que deseja saber?*\n\n1️⃣ Ver demonstração\n2️⃣ Casos de sucesso\n3️⃣ Conhecer os planos\n9️⃣ Voltar ao menu\n0️⃣ Encerrar",
+      "routes": {
+        "1": {
+          "type": "REPLY",
+          "text": "🎥 Assista nossa demonstração:\n\n👉 https://exemplo.com/demo\n\nVeja o sistema em ação!"
+        },
+        "2": {
+          "type": "GOTO",
+          "to": "CASOS_SUCESSO"
+        },
+        "3": {
+          "type": "GOTO",
+          "to": "PLANOS"
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "END",
+          "text": "✅ Até logo!"
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "menu": {
+          "type": "HOME"
+        }
+      }
+    },
+    "CASOS_SUCESSO": {
+      "message": "⭐ *Casos de Sucesso*\n\n📊 *Loja de Roupas - SP*\n• 5.000 atendimentos/mês automatizados\n• 70% de redução em custos\n• Satisfação: 4.8/5.0\n\n🏥 *Clínica Médica - RJ*\n• Agendamentos 100% automatizados\n• Redução de 90% em no-shows\n• ROI de 300% em 3 meses\n\n🍕 *Delivery - BH*\n• Pedidos via WhatsApp 24/7\n• Aumento de 150% nas vendas\n• Tempo de resposta: 5 segundos\n\n*Quer resultados assim?*\n\n1️⃣ Conhecer os planos\n2️⃣ Agendar demonstração\n9️⃣ Voltar\n0️⃣ Menu principal",
+      "routes": {
+        "1": {
+          "type": "GOTO",
+          "to": "PLANOS"
+        },
+        "2": {
+          "type": "REPLY",
+          "text": "📅 Agende demonstração:\n👉 https://exemplo.com/agendar\n\nMostre como funciona na prática!"
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "HOME"
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "menu": {
+          "type": "HOME"
+        }
+      }
+    },
+    "FAQ": {
+      "message": "❓ *Dúvidas Frequentes*\n\nEscolha sua dúvida:\n\n1️⃣ Preciso instalar algo?\n2️⃣ Funciona com WhatsApp Business?\n3️⃣ Posso cancelar quando quiser?\n4️⃣ Tem suporte técnico?\n5️⃣ Como é a segurança?\n\n9️⃣ Voltar ao menu\n0️⃣ Encerrar",
+      "routes": {
+        "1": {
+          "type": "REPLY",
+          "text": "📱 *Não precisa instalar nada!*\n\nNosso sistema é 100% online (cloud).\nBasta conectar seu WhatsApp e pronto.\n\nFunciona em:\n✅ Computador\n✅ Celular\n✅ Tablet"
+        },
+        "2": {
+          "type": "REPLY",
+          "text": "✅ *Sim, funciona com WhatsApp Business!*\n\nCompatível com:\n• WhatsApp Business\n• WhatsApp comum\n• WhatsApp Business API\n\nVocê escolhe qual usar."
+        },
+        "3": {
+          "type": "REPLY",
+          "text": "🔓 *Sem contrato de fidelidade!*\n\nCancele quando quiser:\n• Sem multas\n• Sem burocracia\n• Direto pelo painel\n\nSeu WhatsApp continua funcionando normalmente."
+        },
+        "4": {
+          "type": "REPLY",
+          "text": "🛠️ *Suporte completo!*\n\nPlano Básico:\n• Email (24h)\n\nPlano Pro:\n• WhatsApp prioritário\n• Resposta em 2h\n\nEnterprise:\n• Gerente dedicado\n• Suporte 24/7"
+        },
+        "5": {
+          "type": "REPLY",
+          "text": "🔐 *Segurança garantida!*\n\n✅ Criptografia end-to-end\n✅ Servidores no Brasil\n✅ Certificado SSL\n✅ Backup automático\n✅ LGPD compliant\n\nSeus dados estão 100% protegidos."
+        },
+        "9": {
+          "type": "BACK"
+        },
+        "0": {
+          "type": "END",
+          "text": "✅ Esperamos ter ajudado! Volte sempre."
+        },
+        "voltar": {
+          "type": "BACK"
+        },
+        "menu": {
+          "type": "HOME"
+        }
+      }
+    }
+  }
+}

@@ -24,6 +24,23 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // =====================================
+// NORMALIZAÇÃO DE TOKENS
+// =====================================
+function normalizeToken(token) {
+  if (!token) return "";
+  const normalized = String(token).trim().toLowerCase();
+  return normalized;
+}
+
+function validateToken(token) {
+  const normalized = normalizeToken(token);
+  if (!normalized || normalized.length < 5) {
+    return { valid: false, normalized, error: "Token inválido ou muito curto" };
+  }
+  return { valid: true, normalized };
+}
+
+// =====================================
 // DATABASE SQLite
 // =====================================
 const DB_FILE = path.resolve(DATA_DIR, "app.db");
@@ -83,27 +100,40 @@ function initDb() {
 }
 
 async function dbGetTenant(token) {
+  const normalizedToken = normalizeToken(token);
+  if (!normalizedToken) return null;
+  
   const stmt = db.prepare("SELECT token, tenant_id FROM tenants WHERE token = ?");
-  const result = stmt.get(token);
-  console.log("[DB] Tenant SELECT:", token, result ? "true" : "false");
+  const result = stmt.get(normalizedToken);
+  console.log("[DB] Tenant SELECT:", normalizedToken, result ? "true" : "false");
   return result || null;
 }
 
 async function dbInsertTenant(token, tenantId) {
+  const normalizedToken = normalizeToken(token);
+  if (!normalizedToken) {
+    console.error("[DB] Não posso inserir tenant com token vazio");
+    return false;
+  }
+  
   const now = new Date().toISOString();
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO tenants (token, tenant_id, created_at, updated_at)
     VALUES (?, ?, ?, ?)
   `);
-  stmt.run(token, tenantId, now, now);
-  console.log("[DB] Tenant UPSERT:", token, tenantId);
+  stmt.run(normalizedToken, tenantId, now, now);
+  console.log("[DB] Tenant UPSERT:", normalizedToken, tenantId);
+  return true;
 }
 
 function dbGetConfig(token) {
+  const normalizedToken = normalizeToken(token);
+  if (!normalizedToken) return null;
+  
   // 1) acha tenant_id pelo token
   const rowTenant = db
     .prepare("SELECT tenant_id FROM tenants WHERE token = ?")
-    .get(token);
+    .get(normalizedToken);
 
   if (!rowTenant?.tenant_id) {
     return null;
@@ -133,9 +163,15 @@ function safeJsonParse(s) {
 async function dbUpsertConfig(token, configObj) {
   // DEPRECATED: Use dbUpsertConfigByTenantId instead
   // Manter para compatibilidade com código antigo, mas redirecionar para o novo método
+  const normalizedToken = normalizeToken(token);
+  if (!normalizedToken) {
+    console.error("[DB] Config UPSERT failed: token normalizado vazio");
+    return;
+  }
+  
   const rowTenant = db
     .prepare("SELECT tenant_id FROM tenants WHERE token = ?")
-    .get(token);
+    .get(normalizedToken);
 
   if (!rowTenant?.tenant_id) {
     console.error("[DB] Config UPSERT failed: token não encontrado em tenants");
@@ -156,7 +192,7 @@ async function dbUpsertConfig(token, configObj) {
   }
 
   await dbUpsertConfigByTenantId(rowTenant.tenant_id, menu, rules, settings);
-  console.log("[DB] Config UPSERT (via dbUpsertConfig):", token, "tenantId=", rowTenant.tenant_id);
+  console.log("[DB] Config UPSERT (via dbUpsertConfig):", normalizedToken, "tenantId=", rowTenant.tenant_id);
 }
 
 function dbGetConfigByTenantId(tenantId) {
@@ -232,6 +268,7 @@ const COMMAND_MENU = "menu";
 // =====================================
 const TENANTS = new Map();
 const CLIENTS_MAP = new Map();
+const AUTH_BASE = path.resolve(__dirname, ".wwebjs_auth");
 
 function emitTenant(tenantId, eventName, payload) {
   io.to(tenantId).emit(eventName, payload);
@@ -240,18 +277,55 @@ function emitTenant(tenantId, eventName, payload) {
 }
 
 function ensureAuthDir() {
-  const authBasePath = path.resolve(__dirname, ".wwebjs_auth");
-  if (!fs.existsSync(authBasePath)) {
-    fs.mkdirSync(authBasePath, { recursive: true });
+  if (!fs.existsSync(AUTH_BASE)) {
+    fs.mkdirSync(AUTH_BASE, { recursive: true });
   }
-  console.log("[WPP] Auth base ok:", authBasePath);
+  console.log("[WPP] Auth base ok:", AUTH_BASE);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function safeCleanupTenantSession(tenantId) {
+  try {
+    const sessionPath = path.join(AUTH_BASE, `session-tenant_${tenantId}`);
+    const delays = [500, 1000, 1500, 2000, 2500, 3000];
+
+    for (let i = 0; i < delays.length; i++) {
+      try {
+        await fs.promises.rm(sessionPath, { recursive: true, force: true });
+        console.log("[WPP] session cleanup ok", "tenant=", tenantId, "path=", sessionPath);
+        return true;
+      } catch (err) {
+        const code = err?.code;
+        if (code === "EBUSY" || code === "EPERM") {
+          console.warn("[WPP] session cleanup retry", "tenant=", tenantId, "attempt=", i + 1, "code=", code);
+          await sleep(delays[i]);
+          continue;
+        }
+        console.error("[WPP] session cleanup failed", "tenant=", tenantId, "code=", code, "msg=", err?.message);
+        return false;
+      }
+    }
+  } catch (err) {
+    console.error("[WPP] session cleanup unexpected error", "tenant=", tenantId, "msg=", err?.message);
+  }
+  return false;
 }
 
 async function getOrCreateTenantByToken(token) {
+  const normalizedToken = normalizeToken(token);
+  
+  if (!normalizedToken) {
+    console.error("[TENANT] Token normalizado vazio, não posso criar tenant");
+    return null;
+  }
+  
   // Verificar se já está em memória
   let tenant = null;
   for (const [, t] of TENANTS) {
-    if (t.token === token) {
+    if (t.token === normalizedToken) {
       tenant = t;
       break;
     }
@@ -263,12 +337,12 @@ async function getOrCreateTenantByToken(token) {
   }
 
   // Buscar no banco de dados
-  const dbTenant = await dbGetTenant(token);
+  const dbTenant = await dbGetTenant(normalizedToken);
   
   if (dbTenant) {
     // Tenant existe no DB, carregar config
     const tenantId = dbTenant.tenant_id;
-    const dbConfigObj = await dbGetConfig(token); // Retorna objeto, NÃO string
+    const dbConfigObj = await dbGetConfig(normalizedToken); // Retorna objeto, NÃO string
     
     // Carregar com fallbacks corretos (dbGetConfig retorna objeto com menu/rules/settings)
     const menu = dbConfigObj?.menu ?? JSON.parse(JSON.stringify(MENU_CONFIG));
@@ -280,44 +354,47 @@ async function getOrCreateTenantByToken(token) {
     
     tenant = {
       tenantId,
-      token,
+      token: normalizedToken,
       config,
       createdAt: Date.now()
     };
     TENANTS.set(tenantId, tenant);
-    console.log("[TENANT] DB load complete:", tenantId, "token=", token, 
+    console.log("[TENANT] DB load complete:", tenantId, "token=", normalizedToken, 
       "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0);
     return tenant;
   }
 
   // Criar novo tenant
-  const tenantId = "t_" + token.slice(0, 8);
+  const tenantId = "t_" + normalizedToken.slice(0, 8);
   const menu = JSON.parse(JSON.stringify(MENU_CONFIG));
   const rules = RULES_DEFAULT;
   const settings = SETTINGS_DEFAULT;
   
   // Persistir no DB (tenant + config completa)
-  await dbInsertTenant(token, tenantId);
+  await dbInsertTenant(normalizedToken, tenantId);
   await dbUpsertConfigByTenantId(tenantId, menu, rules, settings);
   
   const config = Object.assign({}, menu, { __rules: rules, __settings: settings });
   
   tenant = {
     tenantId,
-    token,
+    token: normalizedToken,
     config,
     createdAt: Date.now()
   };
   TENANTS.set(tenantId, tenant);
-  console.log("[TENANT] Criado:", tenantId, "token=", token);
-  console.log("[TENANT] DB save complete:", tenantId, "token=", token,
+  console.log("[TENANT] Criado:", tenantId, "token=", normalizedToken);
+  console.log("[TENANT] DB save complete:", tenantId, "token=", normalizedToken,
     "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0);
   return tenant;
 }
 
 async function getTenantFromRequest(req) {
-  const { token } = req.params;
-  if (!token || token.length < 10) {
+  let { token } = req.params;
+  
+  token = normalizeToken(token);
+  
+  if (!token || token.length < 5) {
     return { error: "Token inválido ou ausente", statusCode: 400 };
   }
   const tenant = await getOrCreateTenantByToken(token);
@@ -392,18 +469,32 @@ function attachBotHandlers(client, tenantId) {
       console.log(`[SESSION] Sessão ativa confirmada para ${tenantId}:${chatId}`);
 
       const tenantConfig = getTenantConfig(tenantId);
-      const triggers = tenantConfig.triggers || [];
-      const isMenuCommand = triggers.includes(body);
+
+      // Adaptar menu para novo formato (compatibilidade)
+      const menu = adaptLegacyMenuFormat(tenantConfig);
+      const triggers = menu?.triggers || [];
+      const normalizedTriggers = triggers.map(t => normalizeInput(t));
+      const isMenuCommand = normalizedTriggers.includes(body);
 
       if (isMenuCommand) {
-        session.step = "MENU_INICIAL";
+        const homeStep = "MENU_INICIAL";
+        session.step = homeStep;
+        session.stack = [];
         session.mode = "MENU";
         session.data = session.data || {};
+        
         console.log("[COMMAND] Menu acionado:", chatId, "body=", body);
-        console.log("[STEP] Step definido para MENU_INICIAL:", chatId);
+        console.log("[STEP] Step definido para:", homeStep, "chatId=", chatId);
         console.log("[SESSION] Modo MENU ativado:", chatId, "step=", session.step);
+        
         try {
-          await sendMenuInicial(client, tenantId, chatId, tenantConfig);
+          const step = getStep(menu, homeStep);
+          if (step) {
+            await client.sendMessage(chatId, renderStep(step));
+            console.log("[FLOW] Menu inicial enviado (engine):", chatId);
+          } else {
+            console.error("[FLOW] Step MENU_INICIAL não encontrado");
+          }
         } catch (e) {
           console.error("[FLOW][ERROR] tenant=", tenantId, e?.message, e?.stack);
         }
@@ -539,9 +630,16 @@ async function getOrCreateClientForTenant(tenant) {
   const tenantId = tenant.tenantId;
   const cached = CLIENTS_MAP.get(tenantId);
   
-  if (cached && cached.client) {
+  // NÃO reutilizar se status for "disconnected" - sempre criar novo
+  if (cached && cached.client && cached.status !== "disconnected") {
     console.log("[WPP] Reutilizando client para tenant:", tenantId, "status=", cached.status);
     return cached.client;
+  }
+
+  // Se existia client disconnected, remover do cache
+  if (cached && cached.status === "disconnected") {
+    console.log("[WPP] client was disconnected, recreating tenant=", tenantId);
+    CLIENTS_MAP.delete(tenantId);
   }
 
   console.log("[WPP] Criando novo client para tenant:", tenantId);
@@ -612,11 +710,27 @@ async function getOrCreateClientForTenant(tenant) {
     emitTenant(tenantId, "status", "✅ Tudo certo! WhatsApp conectado.");
   });
 
-  client.on("disconnected", (reason) => {
+  client.on("disconnected", async (reason) => {
     console.log("[WPP] disconnected tenant:", tenantId, "reason=", reason);
     const cached = CLIENTS_MAP.get(tenantId);
     if (cached) cached.status = "disconnected";
     emitTenant(tenantId, "status", "Desconectado: " + reason);
+
+    if (reason === "LOGOUT") {
+      // INVALIDAR IMEDIATAMENTE para não reutilizar client
+      CLIENTS_MAP.delete(tenantId);
+      console.log("[WPP] client invalidated immediately after LOGOUT tenant=", tenantId);
+
+      // Depois fazer cleanup
+      try {
+        await client.destroy();
+      } catch (e) {
+        console.warn("[WPP] destroy failed on LOGOUT", "tenant=", tenantId, "msg=", e?.message);
+      }
+
+      await sleep(1500);
+      await safeCleanupTenantSession(tenantId);
+    }
   });
 
   // Inicializar
@@ -631,40 +745,335 @@ async function getOrCreateClientForTenant(tenant) {
   return client;
 }
 
+// =====================================
+// ENGINE DE FLUXO CONFIGURÁVEL
+// =====================================
+
+/**
+ * Adaptador para converter formato antigo (triggers/texts/steps) para novo formato
+ */
+function adaptLegacyMenuFormat(oldMenu) {
+  if (!oldMenu) return null;
+
+  // Se já está no novo formato (steps.text + routes array), retornar como está
+  const hasNewSteps = oldMenu.steps && Object.values(oldMenu.steps).some(s => s?.text || Array.isArray(s?.routes));
+  if (hasNewSteps && Array.isArray(oldMenu.triggers)) {
+    return oldMenu;
+  }
+
+  // Converter formato antigo para novo (compatibilidade)
+  const newMenu = {
+    triggers: oldMenu.triggers || ["menu"],
+    steps: {}
+  };
+
+  if (oldMenu.steps) {
+    for (const [stepId, stepData] of Object.entries(oldMenu.steps)) {
+      let text = "";
+
+      if (typeof stepData === "string") {
+        text = stepData;
+      } else if (stepData.header && stepData.options) {
+        text = `${stepData.header}\n\n${stepData.options.join("\n")}`;
+      } else {
+        text = stepData.message || "Opção indisponível";
+      }
+
+      const routes = [];
+
+      if (stepId === "MENU_INICIAL") {
+        routes.push({ match: ["1"], action: { type: "GOTO", to: "PLANOS" } });
+        routes.push({ match: ["2"], action: { type: "TEXT", text: oldMenu.texts?.comoFuncionaPlaceholder || "✅ Como funciona" } });
+        routes.push({ match: ["3"], action: { type: "HANDOFF" } });
+        routes.push({ match: ["9", "menu"], action: { type: "BACK" } });
+        routes.push({ match: ["0"], action: { type: "END", text: oldMenu.texts?.encerrado || "✅ Encerrado" } });
+      } else if (stepId === "PLANOS") {
+        routes.push({ match: ["1"], action: { type: "TEXT", text: oldMenu.texts?.planosBasico || "✅ Plano Básico" } });
+        routes.push({ match: ["2"], action: { type: "TEXT", text: oldMenu.texts?.planosPro || "✅ Plano Pro" } });
+        routes.push({ match: ["9", "voltar"], action: { type: "BACK" } });
+        routes.push({ match: ["0"], action: { type: "END", text: oldMenu.texts?.encerrado || "✅ Encerrado" } });
+        routes.push({ match: ["menu"], action: { type: "BACK" } });
+      }
+
+      newMenu.steps[stepId] = { text, routes, fallback: { type: "TEXT", text: "⚠️ Opção inválida. Tente novamente." } };
+    }
+  }
+
+  return newMenu;
+}
+
+/**
+ * Obter step do menu configurável
+ */
+function getStep(menu, stepId) {
+  if (!menu || !menu.steps) return null;
+  return menu.steps[stepId] || null;
+}
+
+/**
+ * Normalizar entrada do usuário
+ */
+function normalizeInput(input) {
+  return (input || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function validateMenuSchema(menu) {
+  if (!menu || typeof menu !== "object") {
+    return { valid: false, error: "menu deve ser um objeto" };
+  }
+
+  if (!menu.steps || typeof menu.steps !== "object") {
+    return { valid: false, error: "menu.steps deve ser um objeto" };
+  }
+
+  if (!menu.steps.MENU_INICIAL) {
+    return { valid: false, error: "menu.steps.MENU_INICIAL é obrigatório" };
+  }
+
+  const validTypes = new Set(["GOTO", "BACK", "END", "TEXT", "HANDOFF"]);
+
+  // Validar globals.aliases
+  if (menu.globals?.aliases) {
+    if (!Array.isArray(menu.globals.aliases)) {
+      return { valid: false, error: "globals.aliases deve ser um array" };
+    }
+
+    for (let i = 0; i < menu.globals.aliases.length; i++) {
+      const alias = menu.globals.aliases[i];
+      if (!alias || typeof alias !== "object") {
+        return { valid: false, error: `alias inválido em globals.aliases[${i}]` };
+      }
+
+      if (!Array.isArray(alias.match) || alias.match.length === 0) {
+        return { valid: false, error: `alias.match deve ser array não vazio em globals.aliases[${i}]` };
+      }
+
+      if (!alias.action || typeof alias.action !== "object") {
+        return { valid: false, error: `alias.action inválida em globals.aliases[${i}]` };
+      }
+
+      if (!validTypes.has(alias.action.type)) {
+        return { valid: false, error: `alias.action.type inválido em globals.aliases[${i}]` };
+      }
+
+      if (alias.action.type === "GOTO") {
+        if (!alias.action.to || typeof alias.action.to !== "string") {
+          return { valid: false, error: `alias.action.to obrigatório em GOTO (globals.aliases[${i}])` };
+        }
+        if (!menu.steps[alias.action.to]) {
+          return { valid: false, error: `alias.action.to não existe: ${alias.action.to}` };
+        }
+      }
+
+      if (alias.action.type === "TEXT") {
+        if (typeof alias.action.text !== "string") {
+          return { valid: false, error: `alias.action.text obrigatório em TEXT (globals.aliases[${i}])` };
+        }
+      }
+    }
+  }
+
+  for (const [stepId, step] of Object.entries(menu.steps)) {
+    if (!step || typeof step !== "object") {
+      return { valid: false, error: `step inválido: ${stepId}` };
+    }
+
+    if (!Array.isArray(step.routes)) {
+      return { valid: false, error: `menu.steps.${stepId}.routes deve ser um array` };
+    }
+
+    for (const route of step.routes) {
+      if (!route || typeof route !== "object") {
+        return { valid: false, error: `route inválida em ${stepId}` };
+      }
+
+      if (!Array.isArray(route.match) || route.match.length === 0) {
+        return { valid: false, error: `route.match deve ser array não vazio em ${stepId}` };
+      }
+
+      if (!route.action || typeof route.action !== "object") {
+        return { valid: false, error: `route.action inválida em ${stepId}` };
+      }
+
+      if (!validTypes.has(route.action.type)) {
+        return { valid: false, error: `action.type inválido em ${stepId}` };
+      }
+
+      if (route.action.type === "GOTO") {
+        if (!route.action.to || typeof route.action.to !== "string") {
+          return { valid: false, error: `action.to obrigatório em GOTO (${stepId})` };
+        }
+        if (!menu.steps[route.action.to]) {
+          return { valid: false, error: `action.to não existe: ${route.action.to}` };
+        }
+      }
+
+      if (route.action.type === "TEXT") {
+        if (typeof route.action.text !== "string") {
+          return { valid: false, error: `route.action.text obrigatório em TEXT (${stepId})` };
+        }
+      }
+    }
+
+    if (step.fallback) {
+      if (!step.fallback.type || !validTypes.has(step.fallback.type)) {
+        return { valid: false, error: `fallback.type inválido em ${stepId}` };
+      }
+      if (step.fallback.type === "GOTO") {
+        if (!step.fallback.to || typeof step.fallback.to !== "string") {
+          return { valid: false, error: `fallback.to obrigatório em GOTO (${stepId})` };
+        }
+        if (!menu.steps[step.fallback.to]) {
+          return { valid: false, error: `fallback.to não existe: ${step.fallback.to}` };
+        }
+      }
+      if (step.fallback.type === "TEXT") {
+        if (typeof step.fallback.text !== "string") {
+          return { valid: false, error: `fallback.text obrigatório em TEXT (${stepId})` };
+        }
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Resolver rota baseada no input do usuário
+ */
+function resolveRoute(step, input) {
+  if (!step || !Array.isArray(step.routes)) return null;
+
+  const normalizedInput = normalizeInput(input);
+
+  for (const route of step.routes) {
+    const matches = Array.isArray(route?.match) ? route.match : [];
+    for (const m of matches) {
+      if (normalizeInput(m) === normalizedInput) {
+        return route;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Renderizar mensagem de um step
+ */
+function renderStep(step) {
+  if (!step) return "Menu indisponível";
+  return step.text || "Opção indisponível";
+}
+
+/**
+ * Executar ação do fluxo
+ */
+async function executeAction(action, session, client, chatId, tenantId, menu) {
+  const actionType = action?.type;
+  
+  console.log("[FLOW] Executando ação:", actionType, "chatId=", chatId, "currentStep=", session.step);
+  
+  switch (actionType) {
+    case "GOTO": {
+      if (!action.to) {
+        console.warn("[FLOW] GOTO sem action.to");
+        break;
+      }
+      // Empilhar step atual e ir para novo step
+      if (!session.stack) session.stack = [];
+      session.stack.push(session.step);
+      session.step = action.to;
+      
+      const nextStep = getStep(menu, action.to);
+      if (nextStep) {
+        await client.sendMessage(chatId, renderStep(nextStep));
+        console.log("[FLOW] GOTO:", action.to, "stack=", session.stack.join(" > "));
+      } else {
+        console.warn("[FLOW] GOTO step não encontrado:", action.to);
+      }
+      break;
+    }
+    
+    case "BACK": {
+      // Voltar ao step anterior no stack
+      if (!session.stack) session.stack = [];
+      
+      const previousStep = session.stack.pop();
+      const targetStep = previousStep || "MENU_INICIAL";
+      session.step = targetStep;
+      
+      const step = getStep(menu, targetStep);
+      if (step) {
+        await client.sendMessage(chatId, renderStep(step));
+        console.log("[FLOW] BACK para:", targetStep, "stack=", session.stack.join(" > "));
+      }
+      break;
+    }
+
+    case "TEXT": {
+      // Responder sem mudar step
+      if (action.text) {
+        await client.sendMessage(chatId, action.text);
+        console.log("[FLOW] TEXT (step mantido):", session.step);
+      }
+      break;
+    }
+    
+    case "END": {
+      // Finalizar sessão
+      if (action.text) {
+        await client.sendMessage(chatId, action.text);
+      }
+      resetSession(tenantId, chatId);
+      console.log("[FLOW] END: sessão removida");
+      break;
+    }
+
+    case "HANDOFF": {
+      await client.sendMessage(chatId, "Um atendente falará com você");
+      console.log("[FLOW] HANDOFF: placeholder enviado");
+      break;
+    }
+    
+    default:
+      console.warn("[FLOW] Ação desconhecida:", actionType);
+  }
+}
+
 const MENU_CONFIG = {
   triggers: ["menu", "#menu", "start"],
-  texts: {
-    encerrado: "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente.",
-    somenteNumerosMenu: "⚠️ Responda apenas com números (1, 2, 3, 9 ou 0).",
-    somenteNumerosPlanos: "⚠️ Responda apenas com números (1, 2, 9 ou 0).",
-    opcaoInvalidaMenu: "⚠️ Opção inválida. Digite 1, 2, 3, 9 ou 0.",
-    opcaoInvalidaPlanos: "⚠️ Opção inválida. Digite 1, 2, 9 ou 0.",
-    planosBasico: "✅ Plano Básico selecionado. (placeholder)",
-    planosPro: "✅ Plano Pro selecionado. (placeholder)",
-    comoFuncionaPlaceholder: "✅ Você escolheu: Como funciona (placeholder)",
-    atendentePlaceholder: "✅ Você escolheu: Falar com atendente (placeholder)"
+  globals: {
+    aliases: [
+      { match: ["sair", "exit", "quit"], action: { type: "END", text: "✅ Até logo!", resetStack: true } },
+      { match: ["home", "início"], action: { type: "BACK", resetStack: true } }
+    ]
   },
   steps: {
     MENU_INICIAL: {
-      header: "Olá! 👋\nResponda apenas com um número:",
-      options: [
-        "1️⃣ Planos",
-        "2️⃣ Como funciona",
-        "3️⃣ Falar com atendente",
-        "",
-        "9️⃣ Repetir menu",
-        "0️⃣ Encerrar"
-      ]
+      text: "Olá! 👋\nResponda apenas com um número:\n\n1️⃣ Planos\n2️⃣ Como funciona\n3️⃣ Falar com atendente\n\n9️⃣ Repetir menu\n0️⃣ Encerrar",
+      routes: [
+        { match: ["1"], action: { type: "GOTO", to: "PLANOS" } },
+        { match: ["2"], action: { type: "TEXT", text: "✅ Você escolheu: Como funciona (placeholder)" } },
+        { match: ["3"], action: { type: "HANDOFF" } },
+        { match: ["9", "menu"], action: { type: "BACK" } },
+        { match: ["0"], action: { type: "END", text: "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente." } }
+      ],
+      fallback: { type: "TEXT", text: "⚠️ Opção inválida. Digite 1, 2, 3, 9 ou 0." }
     },
     PLANOS: {
-      header: "📦 *Planos*\nResponda apenas com um número:",
-      options: [
-        "1️⃣ Plano Básico",
-        "2️⃣ Plano Pro",
-        "",
-        "9️⃣ Voltar ao menu",
-        "0️⃣ Encerrar"
-      ]
+      text: "📦 *Planos*\nResponda apenas com um número:\n\n1️⃣ Plano Básico\n2️⃣ Plano Pro\n\n9️⃣ Voltar ao menu\n0️⃣ Encerrar",
+      routes: [
+        { match: ["1"], action: { type: "TEXT", text: "✅ Plano Básico selecionado. (placeholder)" } },
+        { match: ["2"], action: { type: "TEXT", text: "✅ Plano Pro selecionado. (placeholder)" } },
+        { match: ["9", "voltar"], action: { type: "BACK" } },
+        { match: ["0"], action: { type: "END", text: "✅ Atendimento encerrado. Quando quiser, digite 'menu' novamente." } }
+      ],
+      fallback: { type: "TEXT", text: "⚠️ Opção inválida. Digite 1, 2, 9 ou 0." }
     }
   }
 };
@@ -685,149 +1094,121 @@ function addProcessedMessage(msgId) {
   }, DUPLICATE_TIMEOUT);
 }
 
-function normalizeInput(input) {
-  return (input || "").trim();
-}
-
-function getMenuInicialText(config) {
-  if (!config?.steps?.MENU_INICIAL) {
-    console.warn("[CONFIG] getMenuInicialText: MENU_INICIAL não encontrado em config.steps");
-    return "Menu indisponível";
-  }
-  const step = config.steps.MENU_INICIAL;
-  if (typeof step === "string") {
-    return step;
-  }
-  const { header, options } = step;
-  return `${header}\n\n${options.join("\n")}`;
-}
-
-async function sendMenuInicial(client, tenantId, chatId, config) {
-  console.log("[FLOW] Enviando MENU_INICIAL:", chatId);
-  console.log("[CONFIG] Step text source:", config?.steps?.MENU_INICIAL ? "CONFIG" : "DEFAULT", "tenant=", tenantId);
-  console.log("[FLOW] sendStep using client=", !!client, "tenant=", tenantId, "to=", chatId, "step=MENU_INICIAL");
-  await client.sendMessage(chatId, getMenuInicialText(config));
-  console.log("[FLOW] MENU_INICIAL enviado:", chatId);
-}
-
-function getPlanosText(config) {
-  if (!config?.steps?.PLANOS) {
-    console.warn("[CONFIG] getPlanosText: PLANOS não encontrado em config.steps");
-    return "Planos indisponíveis";
-  }
-  const step = config.steps.PLANOS;
-  if (typeof step === "string") {
-    return step;
-  }
-  const { header, options } = step;
-  return `${header}\n\n${options.join("\n")}`;
-}
-
-async function sendPlanos(client, tenantId, chatId, config) {
-  console.log("[FLOW] Enviando PLANOS:", chatId);
-  console.log("[CONFIG] Step text source:", config?.steps?.PLANOS ? "CONFIG" : "DEFAULT", "tenant=", tenantId);
-  console.log("[FLOW] sendStep using client=", !!client, "tenant=", tenantId, "to=", chatId, "step=PLANOS");
-  await client.sendMessage(chatId, getPlanosText(config));
-  console.log("[FLOW] PLANOS enviado:", chatId);
-}
-
-function isNumericOnly(body) {
-  return /^[0-9]+$/.test(body);
-}
-
+/**
+ * Handler genérico de fluxo de menu usando engine configurável
+ */
 async function handleMenuFlow(client, tenantId, chatId, body, session, config) {
   console.log("[MENU] Entrada recebida:", chatId, "body=", body, "step=", session.step);
   
-  // Extrair texts do menu config (padrão ou do DB)
-  const texts = config.texts || {};
-
-  if (session.step === "MENU_INICIAL") {
-    // Validar entrada numérica
-    if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, texts.somenteNumerosMenu || "⚠️ Responda apenas com números");
-      await sendMenuInicial(client, tenantId, chatId, config);
-      console.log("[MENU][ERROR] Entrada não numérica no MENU_INICIAL:", chatId, body);
-      return;
+  // Adaptar menu para novo formato se necessário
+  const menu = adaptLegacyMenuFormat(config);
+  if (!menu) {
+    console.error("[MENU] Menu inválido para tenant:", tenantId);
+    await client.sendMessage(chatId, "Menu temporariamente indisponível.");
+    return;
+  }
+  
+  // Obter step atual
+  const currentStep = getStep(menu, session.step);
+  if (!currentStep) {
+    console.warn("[MENU] Step não encontrado:", session.step, "- resetando para MENU_INICIAL");
+    session.step = "MENU_INICIAL";
+    session.stack = [];
+    const homeStep = getStep(menu, session.step);
+    if (homeStep) {
+      await client.sendMessage(chatId, renderStep(homeStep));
     }
+    return;
+  }
+  
+  const normalizedInput = normalizeInput(body);
+  
+  // 1) Checar globals.aliases
+  if (menu.globals?.aliases) {
+    for (const alias of menu.globals.aliases) {
+      const matches = Array.isArray(alias?.match) ? alias.match : [];
+      for (const m of matches) {
+        if (normalizeInput(m) === normalizedInput) {
+          const action = alias.action;
+          const fromStep = session.step;
+          let toStep = null;
 
-    // Processar escolhas numéricas
-    switch (body) {
-      case "1":
-        session.step = "PLANOS";
-        console.log("[STEP] Alterando step:", chatId, "=>", session.step);
-        await sendPlanos(client, tenantId, chatId, config);
-        break;
+          if (action.type === "GOTO") {
+            toStep = action.to || null;
+          } else if (action.type === "BACK") {
+            const previousStep = session.stack?.[session.stack.length - 1] || "MENU_INICIAL";
+            toStep = previousStep;
+          }
 
-      case "2":
-        await client.sendMessage(chatId, texts.comoFuncionaPlaceholder || "Como funciona");
-        console.log("[MENU] Escolha 2 (Como funciona):", chatId);
-        break;
+          if (action.resetStack) {
+            session.stack = [];
+          }
 
-      case "3":
-        await client.sendMessage(chatId, texts.atendentePlaceholder || "Falar com atendente");
-        console.log("[MENU] Escolha 3 (Atendente):", chatId);
-        break;
+          console.log("[ENGINE] matched via=alias",
+            "action=", action.type,
+            "fromStep=", fromStep,
+            "toStep=", toStep,
+            "stackLen=", session.stack?.length || 0
+          );
 
-      case "9":
-        await sendMenuInicial(client, tenantId, chatId, config);
-        console.log("[MENU] Repetir menu (9):", chatId);
-        break;
-
-      case "0":
-        await client.sendMessage(chatId, texts.encerrado || "✅ Atendimento encerrado");
-        console.log("[MENU] Encerrar (0):", chatId);
-        resetSession(tenantId, chatId);
-        console.log("[MENU] Saindo do modo MENU:", chatId);
-        break;
-
-      default:
-        await client.sendMessage(chatId, texts.opcaoInvalidaMenu || "⚠️ Opção inválida");
-        await sendMenuInicial(client, tenantId, chatId, config);
-        console.log("[MENU][ERROR] Opção inválida:", chatId, body);
-        break;
-    }
-  } else if (session.step === "PLANOS") {
-    // Validar entrada numérica
-    if (!isNumericOnly(body)) {
-      await client.sendMessage(chatId, texts.somenteNumerosPlanos || "⚠️ Responda apenas com números");
-      await sendPlanos(client, tenantId, chatId, config);
-      console.log("[MENU][ERROR] Entrada não numérica em PLANOS:", chatId, body);
-      return;
-    }
-
-    // Processar escolhas numéricas do PLANOS
-    switch (body) {
-      case "1":
-        await client.sendMessage(chatId, texts.planosBasico || "✅ Plano Básico selecionado");
-        console.log("[PLANOS] Escolha 1 (Básico):", chatId);
-        break;
-
-      case "2":
-        await client.sendMessage(chatId, texts.planosPro || "✅ Plano Pro selecionado");
-        console.log("[PLANOS] Escolha 2 (Pro):", chatId);
-        break;
-
-      case "9":
-        session.step = "MENU_INICIAL";
-        console.log("[ACTION] Voltar ao MENU_INICIAL:", chatId);
-        await sendMenuInicial(client, tenantId, chatId, config);
-        break;
-
-      case "0":
-        await client.sendMessage(chatId, texts.encerrado || "✅ Atendimento encerrado");
-        console.log("[MENU] Encerrar (0):", chatId);
-        session.mode = null;
-        session.step = "MENU_INICIAL";
-        console.log("[MENU] Saindo do modo MENU:", chatId);
-        break;
-
-      default:
-        await client.sendMessage(chatId, texts.opcaoInvalidaPlanos || "⚠️ Opção inválida");
-        await sendPlanos(client, tenantId, chatId, config);
-        console.log("[PLANOS][ERROR] Opção inválida:", chatId, body);
-        break;
+          await executeAction(action, session, client, chatId, tenantId, menu);
+          return;
+        }
+      }
     }
   }
+  
+  // 2) Checar routes do step atual
+  const route = resolveRoute(currentStep, body);
+  
+  if (route?.action) {
+    const action = route.action;
+    const fromStep = session.step;
+    let toStep = null;
+
+    if (action.type === "GOTO") {
+      toStep = action.to || null;
+    } else if (action.type === "BACK") {
+      const previousStep = session.stack?.[session.stack.length - 1] || "MENU_INICIAL";
+      toStep = previousStep;
+    }
+
+    console.log("[ENGINE] matched via=route",
+      "action=", action.type,
+      "fromStep=", fromStep,
+      "toStep=", toStep,
+      "stackLen=", session.stack?.length || 0
+    );
+
+    await executeAction(action, session, client, chatId, tenantId, menu);
+    return;
+  }
+
+  // 3) Executar fallback do step
+  if (currentStep.fallback) {
+    console.log("[ENGINE] matched via=fallback",
+      "action=", currentStep.fallback.type,
+      "fromStep=", session.step,
+      "stackLen=", session.stack?.length || 0
+    );
+    await executeAction(currentStep.fallback, session, client, chatId, tenantId, menu);
+    return;
+  }
+
+  // 4) Fallback final: settings.defaultMessage
+  const settings = getTenantConfig(tenantId)?.__settings || SETTINGS_DEFAULT;
+  const defaultMessage = settings?.defaultMessage?.trim();
+
+  if (defaultMessage) {
+    console.log("[ENGINE] matched via=default",
+      "fromStep=", session.step,
+      "stackLen=", session.stack?.length || 0
+    );
+    await client.sendMessage(chatId, defaultMessage);
+    return;
+  }
+
+  console.log("[MENU] Nenhuma rota, fallback ou default:", body, "step=", session.step);
 }
 
 // =====================================
@@ -841,12 +1222,13 @@ function getSession(tenantId, chatId) {
   if (!session) {
     session = {
       step: "MENU_INICIAL",
+      stack: [],
       data: {},
       lastMessageAt: Date.now()
     };
     sessions.set(sessionKey, session);
     console.log(`[SESSION] Nova sessão criada:`, sessionKey);
-    console.log("[SESSION] Key:", sessionKey, "step=", session.step);
+    console.log("[SESSION] Key:", sessionKey, "step=", session.step, "stack=", session.stack.length);
     return session;
   }
 
@@ -855,15 +1237,16 @@ function getSession(tenantId, chatId) {
   if (elapsed > SESSION_TTL_MS) {
     console.log(`[SESSION] Sessão expirada, resetando:`, sessionKey);
     session.step = "MENU_INICIAL";
+    session.stack = [];
     session.data = {};
     session.lastMessageAt = Date.now();
-    console.log("[SESSION] Key:", sessionKey, "step=", session.step);
+    console.log("[SESSION] Key:", sessionKey, "step=", session.step, "stack=", session.stack.length);
     return session;
   }
 
   // Atualizar lastMessageAt
   session.lastMessageAt = Date.now();
-  console.log("[SESSION] Key:", sessionKey, "step=", session.step);
+  console.log("[SESSION] Key:", sessionKey, "step=", session.step, "stack=", session.stack.length);
   return session;
 }
 
@@ -887,6 +1270,7 @@ function getSessionsByTenantId(tenantId) {
       result.push({
         chatId,
         step: session.step || "MENU_INICIAL",
+        stack: session.stack || [],
         mode: session.mode || null,
         lastMessageAt: session.lastMessageAt || null,
         updatedAt: new Date(session.lastMessageAt || Date.now()).toISOString()
@@ -1232,11 +1616,14 @@ client.initialize().catch((err) => {
 // SOCKET.IO: CONEXÃO DO CLIENTE
 // =====================================
 io.on("connection", async (socket) => {
-  const token = socket.handshake.query?.token;
+  let token = socket.handshake.query?.token;
+  
+  // Normalizar token
+  token = normalizeToken(token);
   
   // Validar presença de token
-  if (!token) {
-    console.log("[SOCKET] ❌ connect sem token, id=", socket.id, "query=", socket.handshake.query);
+  if (!token || token.length < 5) {
+    console.log("[SOCKET] ❌ connect sem token válido, id=", socket.id, "query=", socket.handshake.query);
     socket.disconnect(true);
     return;
   }
@@ -1251,7 +1638,7 @@ io.on("connection", async (socket) => {
 
   // Entrar na sala do tenant (ISOLAMENTO)
   socket.join(tenant.tenantId);
-  console.log("[SOCKET] ✅ socket joined tenant", tenant.tenantId, "socket=", socket.id);
+  console.log("[SOCKET] ✅ socket joined tenant", tenant.tenantId, "socket=", socket.id, "token=", token);
 
   // Enviar status/QR se já existir client cached
   const cached = CLIENTS_MAP.get(tenant.tenantId);
@@ -1391,6 +1778,11 @@ const putConfigHandler = async (req, res) => {
     const rules = body.rules || body.__rules || [];
     const settings = body.settings || body.__settings || SETTINGS_DEFAULT;
 
+    const menuValidation = validateMenuSchema(menu);
+    if (!menuValidation.valid) {
+      return res.status(400).json({ error: menuValidation.error });
+    }
+
     await dbUpsertConfigByTenantId(tenant.tenantId, menu, rules, settings);
 
     // Atualizar runtime
@@ -1414,8 +1806,10 @@ app.put("/api/t/:token/config", putConfigHandler);
 // =====================================
 app.post("/api/t/:token/config", async (req, res) => {
   try {
-    const { token } = req.params;
-    if (!token || token.length < 10) {
+    let { token } = req.params;
+    token = normalizeToken(token);
+    
+    if (!token || token.length < 5) {
       return res.status(400).json({ error: "Token inválido ou ausente" });
     }
 
@@ -1436,6 +1830,11 @@ app.post("/api/t/:token/config", async (req, res) => {
     }
     if (typeof settings.windowSeconds !== "number") {
       return res.status(400).json({ error: "settings.windowSeconds deve ser number" });
+    }
+
+    const menuValidation = validateMenuSchema(menu);
+    if (!menuValidation.valid) {
+      return res.status(400).json({ error: menuValidation.error });
     }
 
     // Resolver tenant
@@ -1465,16 +1864,17 @@ app.post("/api/t/:token/config", async (req, res) => {
 // =====================================
 app.get("/api/t/:token/sessions", async (req, res) => {
   try {
-    const { token } = req.params;
+    let { token } = req.params;
+    token = normalizeToken(token);
     
     // Validar formato do token
-    if (!token || token.length < 10) {
-      console.warn("[API] token inválido para sessions (formato):", token);
+    if (!token || token.length < 5) {
+      console.warn("[API] token inválido para sessions (formato):", req.params.token);
       return res.status(400).json({ 
         ok: false, 
         error: "TOKEN_INVALID", 
-        token,
-        message: "Token deve ter no mínimo 10 caracteres"
+        token: req.params.token,
+        message: "Token deve ter no mínimo 5 caracteres"
       });
     }
 
@@ -1493,7 +1893,7 @@ app.get("/api/t/:token/sessions", async (req, res) => {
     const tenantId = rowTenant.tenant_id;
     const sessionsList = getSessionsByTenantId(tenantId);
 
-    console.log("[API] GET sessions:", tenantId, "count=", sessionsList.length);
+    console.log("[API] GET sessions:", tenantId, "token=", token, "count=", sessionsList.length);
     res.json({
       tenantId,
       count: sessionsList.length,
@@ -1510,16 +1910,17 @@ app.get("/api/t/:token/sessions", async (req, res) => {
 // =====================================
 app.post("/api/t/:token/sessions/clear", async (req, res) => {
   try {
-    const { token } = req.params;
+    let { token } = req.params;
+    token = normalizeToken(token);
     
     // Validar formato do token
-    if (!token || token.length < 10) {
-      console.warn("[API] token inválido para sessions/clear (formato):", token);
+    if (!token || token.length < 5) {
+      console.warn("[API] token inválido para sessions/clear (formato):", req.params.token);
       return res.status(400).json({ 
         ok: false, 
         error: "TOKEN_INVALID", 
-        token,
-        message: "Token deve ter no mínimo 10 caracteres"
+        token: req.params.token,
+        message: "Token deve ter no mínimo 5 caracteres"
       });
     }
 
@@ -1538,7 +1939,7 @@ app.post("/api/t/:token/sessions/clear", async (req, res) => {
     const tenantId = rowTenant.tenant_id;
     const cleared = clearSessionsByTenantId(tenantId);
 
-    console.log("[API] CLEAR sessions:", tenantId, "cleared=", cleared);
+    console.log("[API] CLEAR sessions:", tenantId, "token=", token, "cleared=", cleared);
     res.json({
       ok: true,
       tenantId,
@@ -1547,6 +1948,159 @@ app.post("/api/t/:token/sessions/clear", async (req, res) => {
   } catch (err) {
     console.error("❌ Erro ao limpar sessões:", err.message);
     res.status(500).json({ error: "Erro ao limpar sessões" });
+  }
+});
+
+// =====================================
+// API REST: DEBUG - ENGINE SIMULATION
+// =====================================
+app.post("/api/t/:token/engine/simulate", async (req, res) => {
+  try {
+    let { token } = req.params;
+    token = normalizeToken(token);
+    
+    if (!token || token.length < 5) {
+      return res.status(400).json({ error: "Token inválido" });
+    }
+
+    const tenant = await getOrCreateTenantByToken(token);
+    if (!tenant) {
+      return res.status(400).json({ error: "Tenant inválido" });
+    }
+
+    const { input, chatId = "simulate@c.us", mode = "MENU" } = req.body;
+    if (!input || typeof input !== "string") {
+      return res.status(400).json({ error: "input é obrigatório e deve ser string" });
+    }
+
+    // Criar ou recuperar sessão de simulação
+    const sessionKey = `${tenant.tenantId}:${chatId}`;
+    let session = sessions.get(sessionKey);
+    if (!session) {
+      session = { step: "MENU_INICIAL", stack: [], data: {}, lastMessageAt: Date.now(), mode: "MENU" };
+      sessions.set(sessionKey, session);
+    }
+
+    const tenantConfig = getTenantConfig(tenant.tenantId);
+    const menu = adaptLegacyMenuFormat(tenantConfig);
+    if (!menu) {
+      return res.status(400).json({ error: "Menu inválido para tenant" });
+    }
+
+    const normalizedInput = normalizeInput(input);
+    const stackBefore = [...(session.stack || [])];
+    let matched = false;
+    let via = null;
+    let action = null;
+    let fromStep = session.step;
+    let toStep = null;
+
+    // 1) Checar globals.aliases
+    if (menu.globals?.aliases) {
+      for (const alias of menu.globals.aliases) {
+        const matches = Array.isArray(alias?.match) ? alias.match : [];
+        for (const m of matches) {
+          if (normalizeInput(m) === normalizedInput) {
+            matched = true;
+            via = "alias";
+            action = alias.action;
+
+            if (action.type === "GOTO") {
+              toStep = action.to;
+            } else if (action.type === "BACK") {
+              toStep = session.stack?.[session.stack.length - 1] || "MENU_INICIAL";
+            }
+
+            if (action.resetStack) {
+              session.stack = [];
+            }
+
+            console.log("[ENGINE/SIM] matched via=alias action=", action.type);
+            break;
+          }
+        }
+        if (matched) break;
+      }
+    }
+
+    // 2) Checar routes do step atual
+    if (!matched) {
+      const currentStep = getStep(menu, session.step);
+      if (currentStep) {
+        const route = resolveRoute(currentStep, input);
+        if (route?.action) {
+          matched = true;
+          via = "route";
+          action = route.action;
+
+          if (action.type === "GOTO") {
+            toStep = action.to;
+          } else if (action.type === "BACK") {
+            toStep = session.stack?.[session.stack.length - 1] || "MENU_INICIAL";
+          }
+
+          console.log("[ENGINE/SIM] matched via=route action=", action.type);
+        }
+      }
+    }
+
+    // 3) Checar fallback
+    if (!matched) {
+      const currentStep = getStep(menu, session.step);
+      if (currentStep?.fallback) {
+        matched = true;
+        via = "fallback";
+        action = currentStep.fallback;
+
+        if (action.type === "GOTO") {
+          toStep = action.to;
+        } else if (action.type === "BACK") {
+          toStep = session.stack?.[session.stack.length - 1] || "MENU_INICIAL";
+        }
+
+        console.log("[ENGINE/SIM] matched via=fallback action=", action.type);
+      }
+    }
+
+    // 4) Checar default
+    if (!matched) {
+      const settings = tenantConfig?.__settings || SETTINGS_DEFAULT;
+      if (settings?.defaultMessage) {
+        matched = true;
+        via = "default";
+        console.log("[ENGINE/SIM] matched via=default");
+      }
+    }
+
+    // Simular execução da ação sem enviar mensagens
+    if (action?.type === "GOTO" && action.to) {
+      if (!session.stack) session.stack = [];
+      session.stack.push(session.step);
+      session.step = action.to;
+      toStep = action.to;
+    } else if (action?.type === "BACK") {
+      const previousStep = session.stack?.pop();
+      session.step = previousStep || "MENU_INICIAL";
+      toStep = session.step;
+    } else if (action?.type === "END") {
+      sessions.delete(sessionKey);
+    }
+
+    const stackAfter = [...(session.stack || [])];
+
+    res.json({
+      matched,
+      via,
+      action: action ? { type: action.type, to: action.to, text: action.text ? "..." : undefined } : null,
+      fromStep,
+      toStep,
+      stackBefore,
+      stackAfter,
+      sessionClosed: !sessions.has(sessionKey)
+    });
+  } catch (err) {
+    console.error("❌ Erro na simulação:", err.message);
+    res.status(500).json({ error: "Erro na simulação", message: err.message });
   }
 });
 
@@ -1651,6 +2205,17 @@ app.post("/api/settings", (req, res) => {
     console.error("❌ Erro ao salvar settings:", err.message);
     return res.status(500).json({ error: "Erro ao salvar settings" });
   }
+});
+
+// =====================================
+// PROTEÇÃO GLOBAL CONTRA CRASH
+// =====================================
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] uncaughtException", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("[FATAL] unhandledRejection", err);
 });
 
 // =====================================
