@@ -1,24 +1,34 @@
+function getTokenFromPath() {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts.length >= 2 && parts[0] === "t") {
+    return decodeURIComponent(parts[1]);
+  }
+  return null;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   console.log("✅ index.js carregado + DOM pronto");
 
-  // Extrair token da URL (/t/:token)
-  const pathname = window.location.pathname;
-  let token = null;
-  
-  if (pathname.startsWith("/t/")) {
-    token = pathname.split("/t/")[1];
-    console.log("[FRONT] token extraído da URL:", token);
-  }
+  const token = getTokenFromPath();
+  console.log("[FRONT] token extraído da URL:", token);
 
   if (!token) {
     console.error("❌ [FRONT] Nenhum token encontrado na URL");
-    document.getElementById("status-text").textContent = "Erro: token ausente";
+    const statusText = document.getElementById("status-text");
+    if (statusText) statusText.textContent = "Erro: token ausente";
     return;
   }
 
-  // Criar socket com token na query string
-  const socket = io({
-    query: { token }
+  const manageLink = document.getElementById("manage-messages-link");
+  if (manageLink) {
+    manageLink.href = `/t/${encodeURIComponent(token)}/messages`;
+  }
+
+  // Criar socket e entrar no tenant
+  const socket = io();
+  socket.on("connect", () => {
+    console.log("🟢 [FRONT] socket conectado:", socket.id, "token=", token);
+    socket.emit("joinTenant", { token });
   });
 
   const qrContainer = document.getElementById("qr-container");
@@ -58,6 +68,5 @@ document.addEventListener("DOMContentLoaded", () => {
     if (statusText) statusText.textContent = `Status: ${status}`;
   });
 
-  socket.on("connect", () => console.log("🟢 [FRONT] socket conectado:", socket.id, "token=", token));
   socket.on("disconnect", (r) => console.log("🔴 [FRONT] socket desconectado:", r));
 });

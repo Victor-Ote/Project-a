@@ -1,248 +1,586 @@
-let rules = [];
-let defaultMessage = "";
-let defaultWindowSeconds = 24 * 60 * 60; // 24 horas em segundos
-
-const rulesContainer = document.getElementById("rules-container");
-const btnAdd = document.getElementById("btn-add");
-const btnSave = document.getElementById("btn-save");
-const defaultMessageInput = document.getElementById("default-message-input");
-const defaultWindowInput = document.getElementById("default-window-input");
-
-// =====================================
-// FUNÇÃO: CRIAR SVG TRASH ICON
-// =====================================
-function createTrashIcon() {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("width", "20");
-  svg.setAttribute("height", "20");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "2");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  
-  const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path1.setAttribute("d", "M3 6h18");
-  
-  const path2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path2.setAttribute("d", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2");
-  
-  const path3 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path3.setAttribute("d", "M5 6v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6");
-  
-  const path4 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path4.setAttribute("d", "M10 11v6");
-  
-  const path5 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path5.setAttribute("d", "M14 11v6");
-  
-  svg.appendChild(path1);
-  svg.appendChild(path2);
-  svg.appendChild(path3);
-  svg.appendChild(path4);
-  svg.appendChild(path5);
-  
-  return svg;
+function getTokenFromPath() {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts.length >= 2 && parts[0] === "t") {
+    return decodeURIComponent(parts[1]);
+  }
+  return null;
 }
 
-// =====================================
-// FUNÇÃO: CRIAR LINHA DE REGRA
-// =====================================
-function createRuleRow(received = "", sent = "") {
+function showMessage(text, type = "info") {
+  const el = document.getElementById("ui-message");
+  if (!el) return;
+  el.style.display = "block";
+  el.textContent = text;
+  el.className = "status-container";
+  if (type === "error") {
+    el.style.borderLeftColor = "#dc3545";
+  } else {
+    el.style.borderLeftColor = "#667eea";
+  }
+}
+
+function safeJsonParse(text, fallback) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeConfig(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { menu: {}, rules: [], settings: { defaultMessage: "", windowSeconds: 86400 } };
+  }
+
+  if (payload.menu || payload.rules || payload.settings) {
+    return {
+      menu: payload.menu || {},
+      rules: Array.isArray(payload.rules) ? payload.rules : [],
+      settings: payload.settings || { defaultMessage: "", windowSeconds: 86400 }
+    };
+  }
+
+  return {
+    menu: payload,
+    rules: [],
+    settings: { defaultMessage: "", windowSeconds: 86400 }
+  };
+}
+
+function validateConfig(menu, rules, settings) {
+  if (!menu || typeof menu !== "object") return "menu deve ser um objeto";
+  if (!menu.steps || typeof menu.steps !== "object") return "menu.steps deve existir";
+  if (!Array.isArray(rules)) return "rules deve ser um array";
+  if (!settings || typeof settings !== "object") return "settings deve ser um objeto";
+  if (typeof settings.defaultMessage !== "string") return "settings.defaultMessage deve ser string";
+  if (typeof settings.windowSeconds !== "number" || Number.isNaN(settings.windowSeconds)) {
+    return "settings.windowSeconds deve ser number";
+  }
+  if (settings.windowSeconds < 0) return "settings.windowSeconds deve ser >= 0";
+  return null;
+}
+
+function parseWindowSeconds(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 86400;
+}
+
+function renderSessions(list = []) {
+  const tbody = document.getElementById("sessions-tbody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  if (!Array.isArray(list) || list.length === 0) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="4">Nenhuma sessão encontrada</td>`;
+    tbody.appendChild(row);
+    return;
+  }
+
+  list.forEach((s) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${s.chatId || ""}</td>
+      <td>${s.step || ""}</td>
+      <td>${Array.isArray(s.stack) ? s.stack.length : s.stackLen || 0}</td>
+      <td>${s.updatedAt || ""}</td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+
+function createOptionRow(option, onChange, stepOptions) {
   const row = document.createElement("div");
-  row.className = "rule-row";
+  row.className = "option-row";
 
-  const inputsWrapper = document.createElement("div");
-  inputsWrapper.className = "rule-inputs-wrapper";
-
-  const receivedGroup = document.createElement("div");
-  receivedGroup.className = "rule-input-group";
-  receivedGroup.innerHTML = `
-    <label>Mensagem recebida</label>
-    <input type="text" class="received-input" placeholder="Ex: olá, oi..." value="${received}">
+  const matchGroup = document.createElement("div");
+  matchGroup.innerHTML = `
+    <label>Opção</label>
+    <input type="text" value="${option.match || ""}" placeholder="Ex: 1, voltar">
   `;
 
-  const sentGroup = document.createElement("div");
-  sentGroup.className = "rule-input-group";
-  sentGroup.innerHTML = `
-    <label>Mensagem enviada</label>
-    <input type="text" class="sent-input" placeholder="Ex: Olá! Como posso ajudar?" value="${sent}">
+  const actionGroup = document.createElement("div");
+  actionGroup.innerHTML = `
+    <label>Ação</label>
+    <select>
+      <option value="GOTO">Ir para menu</option>
+      <option value="BACK">Voltar</option>
+      <option value="END">Encerrar</option>
+      <option value="TEXT">Enviar texto</option>
+      <option value="HANDOFF">Atendente</option>
+    </select>
   `;
 
-  const deleteBtn = document.createElement("button");
-  deleteBtn.className = "btn-trash";
-  deleteBtn.setAttribute("type", "button");
-  deleteBtn.setAttribute("title", "Deletar esta regra");
-  deleteBtn.appendChild(createTrashIcon());
+  const targetGroup = document.createElement("div");
+  targetGroup.innerHTML = `
+    <label>Destino / Texto</label>
+    <input type="text" placeholder="MENU_DESTINO ou mensagem">
+    <textarea rows="3" class="default-message-input" style="min-height:90px; display:none;"></textarea>
+  `;
 
-  // Event listener para deletar a linha
-  deleteBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    row.remove();
+  const select = actionGroup.querySelector("select");
+  const matchInput = matchGroup.querySelector("input");
+  const targetInput = targetGroup.querySelector("input");
+  const targetTextarea = targetGroup.querySelector("textarea");
+
+  select.value = option.type || "GOTO";
+  targetInput.value = option.value || "";
+  targetTextarea.value = option.value || "";
+
+  function refreshTargetPlaceholder() {
+    const isText = select.value === "TEXT";
+    targetInput.style.display = isText ? "none" : "block";
+    targetTextarea.style.display = isText ? "block" : "none";
+
+    if (select.value === "GOTO") {
+      targetInput.placeholder = `Destino: ${stepOptions.join(", ") || "MENU_INICIAL"}`;
+    } else if (select.value === "TEXT") {
+      targetTextarea.placeholder = "Mensagem para enviar";
+    } else if (select.value === "END") {
+      targetInput.placeholder = "Mensagem final (opcional)";
+    } else {
+      targetInput.placeholder = "(não aplicável)";
+    }
+  }
+
+  refreshTargetPlaceholder();
+
+  matchInput.addEventListener("input", () => {
+    option.match = matchInput.value;
+    onChange(false);
   });
 
-  inputsWrapper.appendChild(receivedGroup);
-  inputsWrapper.appendChild(sentGroup);
+  select.addEventListener("change", () => {
+    option.type = select.value;
+    targetInput.value = option.value || "";
+    targetTextarea.value = option.value || "";
+    refreshTargetPlaceholder();
+    onChange(false);
+  });
 
-  row.appendChild(inputsWrapper);
-  row.appendChild(deleteBtn);
+  targetInput.addEventListener("input", () => {
+    option.value = targetInput.value;
+    onChange(false);
+  });
+
+  targetTextarea.addEventListener("input", () => {
+    option.value = targetTextarea.value;
+    onChange(false);
+  });
+
+  row.appendChild(matchGroup);
+  row.appendChild(actionGroup);
+  row.appendChild(targetGroup);
 
   return row;
 }
 
-// =====================================
-// FUNÇÃO: RENDERIZAR REGRAS
-// =====================================
-function renderRules() {
-  rulesContainer.innerHTML = "";
-  
-  if (rules.length === 0) {
-    // Criar uma linha vazia padrão
-    const emptyRow = createRuleRow("", "");
-    rulesContainer.appendChild(emptyRow);
+function createBlockCard(block, onChange, onRemove, stepOptions) {
+  const card = document.createElement("div");
+  card.className = "block-card";
+
+  const header = document.createElement("div");
+  header.className = "block-header";
+  header.innerHTML = `
+    <strong>${block.stepId}</strong>
+    <button class="btn btn-danger" type="button">Remover</button>
+  `;
+
+  const removeBtn = header.querySelector("button");
+  removeBtn.addEventListener("click", () => onRemove(block));
+
+  const grid = document.createElement("div");
+  grid.className = "block-grid";
+  grid.innerHTML = `
+    <div>
+      <label>ID do menu</label>
+      <input type="text" value="${block.stepId}" placeholder="MENU_INICIAL">
+    </div>
+    <div>
+      <label>Texto da mensagem</label>
+      <textarea rows="4" class="default-message-input" style="min-height:120px;">${block.text}</textarea>
+    </div>
+    <div>
+      <label>Mensagem de fallback</label>
+      <input type="text" value="${block.fallbackText}" placeholder="Opção inválida">
+    </div>
+  `;
+
+  const [idInput, textArea, fallbackInput] = grid.querySelectorAll("input, textarea");
+  idInput.addEventListener("change", () => {
+    block.stepId = idInput.value || "MENU_INICIAL";
+    header.querySelector("strong").textContent = block.stepId;
+    onChange(true);
+  });
+  textArea.addEventListener("input", () => {
+    block.text = textArea.value;
+    onChange(false);
+  });
+  fallbackInput.addEventListener("input", () => {
+    block.fallbackText = fallbackInput.value;
+    onChange(false);
+  });
+
+  const optionsContainer = document.createElement("div");
+  const optionsHeader = document.createElement("div");
+  optionsHeader.className = "section-header";
+  optionsHeader.innerHTML = `
+    <h3>Opções</h3>
+    <button class="btn btn-primary" type="button">Adicionar opção</button>
+  `;
+  const addOptionBtn = optionsHeader.querySelector("button");
+  addOptionBtn.addEventListener("click", () => {
+    block.options.push({ match: "", type: "GOTO", value: "" });
+    onChange(true);
+  });
+
+  const optionsList = document.createElement("div");
+  function renderOptions() {
+    optionsList.innerHTML = "";
+    block.options.forEach((opt, idx) => {
+      const row = createOptionRow(opt, onChange, stepOptions());
+      const remove = document.createElement("button");
+      remove.className = "btn btn-danger";
+      remove.textContent = "Remover";
+      remove.type = "button";
+      remove.addEventListener("click", () => {
+        block.options.splice(idx, 1);
+        onChange(true);
+      });
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "option-actions";
+      actionWrap.appendChild(remove);
+      row.appendChild(actionWrap);
+      optionsList.appendChild(row);
+    });
+  }
+
+  optionsContainer.appendChild(optionsHeader);
+  optionsContainer.appendChild(optionsList);
+
+  card.appendChild(header);
+  card.appendChild(grid);
+  card.appendChild(optionsContainer);
+
+  renderOptions();
+
+  card.renderOptions = renderOptions;
+  return card;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const token = getTokenFromPath();
+  const API_BASE = "/api/t/" + encodeURIComponent(token || "");
+
+  const blocksContainer = document.getElementById("blocks-container");
+  const settingsDefaultMessage = document.getElementById("settings-default-message");
+  const settingsWindowSeconds = document.getElementById("settings-window-seconds");
+  const menuTextarea = document.getElementById("menu-json");
+  const rulesTextarea = document.getElementById("rules-json");
+  const settingsTextarea = document.getElementById("settings-json");
+
+  const btnAddBlock = document.getElementById("btn-add-block");
+  const btnSave = document.getElementById("btn-save");
+  const btnLoad = document.getElementById("btn-load");
+  const btnExport = document.getElementById("btn-export");
+  const btnApplyAdvanced = document.getElementById("btn-apply-advanced");
+  const fileImport = document.getElementById("file-import");
+  const btnListSessions = document.getElementById("btn-list-sessions");
+  const btnClearSessions = document.getElementById("btn-clear-sessions");
+  const btnBack = document.getElementById("btn-back");
+  const botName = document.getElementById("bot-name");
+  const statusChip = document.getElementById("status-chip");
+
+  if (!token) {
+    showMessage("Token ausente na URL", "error");
+    console.error("❌ Token ausente na URL");
     return;
   }
 
-  rules.forEach((rule) => {
-    const row = createRuleRow(rule.received, rule.sent);
-    rulesContainer.appendChild(row);
-  });
-}
+  if (botName) botName.textContent = `🤖 Bot do Tenant: ${token}`;
+  if (btnBack) btnBack.href = `/t/${encodeURIComponent(token)}`;
 
-// =====================================
-// FUNÇÃO: ADICIONAR LINHA
-// =====================================
-function addRule() {
-  const newRow = createRuleRow("", "");
-  rulesContainer.appendChild(newRow);
-}
+  let uiBlocks = [];
+  let currentRules = [];
+  let currentTriggers = ["menu"];
 
-// =====================================
-// FUNÇÃO: SALVAR REGRAS
-// =====================================
-async function saveRules() {
-  const rows = document.querySelectorAll(".rule-row");
-  const newRules = [];
+  function stepOptions() {
+    return uiBlocks.map(b => b.stepId).filter(Boolean);
+  }
 
-  rows.forEach(row => {
-    const received = row.querySelector(".received-input").value.trim();
-    const sent = row.querySelector(".sent-input").value.trim();
-    
-    // Apenas adicionar se AMBOS os campos têm valor após trim
-    if (received && sent) {
-      newRules.push({ received, sent });
-    }
-  });
+  function syncAdvanced() {
+    const menu = buildMenuFromUI();
+    menuTextarea.value = JSON.stringify(menu, null, 2);
+    rulesTextarea.value = JSON.stringify(currentRules || [], null, 2);
+    settingsTextarea.value = JSON.stringify({
+      defaultMessage: settingsDefaultMessage.value || "",
+      windowSeconds: parseWindowSeconds(settingsWindowSeconds.value)
+    }, null, 2);
+  }
 
-  // Obter default message
-  const newDefaultMessage = defaultMessageInput.value.trim();
-  
-  // Obter janela de tempo (converter minutos para segundos)
-  const windowMinutes = parseFloat(defaultWindowInput.value) || 1440;
-  const newWindowSeconds = Math.floor(windowMinutes * 60);
+  function renderBlocks() {
+    if (!blocksContainer) return;
+    blocksContainer.innerHTML = "";
+    uiBlocks.forEach((block) => {
+      const card = createBlockCard(block, (shouldRerender) => {
+        if (shouldRerender) {
+          renderBlocks();
+        }
+        syncAdvanced();
+      }, (toRemove) => {
+        uiBlocks = uiBlocks.filter(b => b !== toRemove);
+        if (uiBlocks.length === 0) {
+          uiBlocks.push(createEmptyBlock("MENU_INICIAL"));
+        }
+        renderBlocks();
+        syncAdvanced();
+      }, stepOptions);
+      blocksContainer.appendChild(card);
+      card.renderOptions();
+    });
+  }
 
-  try {
-    // Salvar regras
-    const rulesResponse = await fetch("/api/rules", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newRules)
+  function createEmptyBlock(stepId) {
+    return {
+      stepId,
+      text: "",
+      fallbackText: "Opção inválida. Tente novamente.",
+      options: []
+    };
+  }
+
+  function buildMenuFromUI() {
+    const steps = {};
+    uiBlocks.forEach((block) => {
+      const routes = block.options
+        .filter(opt => opt.match && opt.match.trim().length > 0)
+        .map(opt => {
+          const matches = opt.match.split(",").map(m => m.trim()).filter(Boolean);
+          const action = { type: opt.type || "GOTO" };
+
+          if (action.type === "GOTO") action.to = opt.value || "MENU_INICIAL";
+          if (action.type === "TEXT" || action.type === "END") action.text = opt.value || "";
+
+          return { match: matches, action };
+        });
+
+      steps[block.stepId || "MENU_INICIAL"] = {
+        text: block.text || "",
+        routes,
+        fallback: block.fallbackText ? { type: "TEXT", text: block.fallbackText } : undefined
+      };
     });
 
-    if (!rulesResponse.ok) {
-      throw new Error("Erro ao salvar regras");
+    return {
+      triggers: currentTriggers || ["menu"],
+      steps
+    };
+  }
+
+  function loadToUI(menu, rules, settings) {
+    currentRules = Array.isArray(rules) ? rules : [];
+    currentTriggers = menu?.triggers || ["menu"];
+
+    uiBlocks = [];
+    const steps = menu?.steps || {};
+    const ordered = Object.keys(steps);
+    if (steps.MENU_INICIAL) {
+      uiBlocks.push({
+        stepId: "MENU_INICIAL",
+        text: steps.MENU_INICIAL.text || "",
+        fallbackText: steps.MENU_INICIAL.fallback?.text || "Opção inválida. Tente novamente.",
+        options: (steps.MENU_INICIAL.routes || []).map(r => ({
+          match: (r.match || []).join(", "),
+          type: r.action?.type || "GOTO",
+          value: r.action?.to || r.action?.text || ""
+        }))
+      });
     }
 
-    const rulesResult = await rulesResponse.json();
-
-    // Salvar settings (default message + janela)
-    const settingsResponse = await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        defaultMessage: newDefaultMessage,
-        defaultWindowSeconds: newWindowSeconds
-      })
+    ordered.filter(id => id !== "MENU_INICIAL").forEach((id) => {
+      const step = steps[id];
+      uiBlocks.push({
+        stepId: id,
+        text: step?.text || "",
+        fallbackText: step?.fallback?.text || "Opção inválida. Tente novamente.",
+        options: (step?.routes || []).map(r => ({
+          match: (r.match || []).join(", "),
+          type: r.action?.type || "GOTO",
+          value: r.action?.to || r.action?.text || ""
+        }))
+      });
     });
 
-    if (!settingsResponse.ok) {
-      throw new Error("Erro ao salvar mensagem default");
+    if (uiBlocks.length === 0) {
+      uiBlocks.push(createEmptyBlock("MENU_INICIAL"));
     }
 
-    alert(`✅ Salvo com sucesso!\n- ${rulesResult.count} regra(s)\n- Mensagem default: ${newDefaultMessage ? 'configurada' : 'removida'}\n- Janela: ${windowMinutes} minuto(s)`);
-    loadAll();
-  } catch (err) {
-    alert(`❌ Erro ao salvar: ${err.message}`);
+    settingsDefaultMessage.value = settings?.defaultMessage || "";
+    settingsWindowSeconds.value = settings?.windowSeconds || 86400;
+
+    renderBlocks();
+    syncAdvanced();
   }
-}
 
-// =====================================
-// FUNÇÃO: CARREGAR REGRAS
-// =====================================
-async function loadRules() {
-  try {
-    const response = await fetch("/api/rules");
-    
-    if (!response.ok) {
-      throw new Error("Erro ao carregar regras");
+  async function loadConfig() {
+    try {
+      showMessage("Carregando config...");
+      const res = await fetch(`${API_BASE}/config`);
+      if (!res.ok) throw new Error("Erro ao carregar config");
+      const payload = await res.json();
+      const normalized = normalizeConfig(payload);
+      loadToUI(normalized.menu, normalized.rules, normalized.settings);
+      showMessage("Config carregada com sucesso");
+    } catch (err) {
+      console.error("❌ Erro ao carregar config:", err);
+      showMessage("Erro ao carregar config", "error");
     }
-
-    rules = await response.json();
-    renderRules();
-  } catch (err) {
-    console.error("❌ Erro ao carregar regras:", err);
-    rules = [];
-    renderRules();
   }
-}
 
-// =====================================
-// FUNÇÃO: CARREGAR SETTINGS
-// =====================================
-async function loadSettings() {
-  try {
-    const response = await fetch("/api/settings");
-    
-    if (!response.ok) {
-      throw new Error("Erro ao carregar settings");
+  async function saveConfig() {
+    const menu = buildMenuFromUI();
+    const rules = currentRules || [];
+    const settings = {
+      defaultMessage: settingsDefaultMessage.value || "",
+      windowSeconds: Number(settingsWindowSeconds.value)
+    };
+
+    const validationError = validateConfig(menu, rules, settings);
+    if (validationError) {
+      showMessage(validationError, "error");
+      console.error("❌ Validação falhou:", validationError);
+      return;
     }
 
-    const settings = await response.json();
-    defaultMessage = settings.defaultMessage || "";
-    defaultMessageInput.value = defaultMessage;
-    
-    // Converter seconds para minutes no input
-    if (settings.defaultWindowSeconds) {
-      defaultWindowSeconds = settings.defaultWindowSeconds;
-      const minutes = Math.round(defaultWindowSeconds / 60);
-      defaultWindowInput.value = minutes;
-    } else {
-      defaultWindowInput.value = 1440; // 24 horas padrão
+    try {
+      showMessage("Salvando config...");
+      const res = await fetch(`${API_BASE}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ menu, rules, settings })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Erro ao salvar config");
+      }
+
+      syncAdvanced();
+      showMessage("Config salva com sucesso");
+    } catch (err) {
+      console.error("❌ Erro ao salvar config:", err);
+      showMessage("Erro ao salvar config", "error");
     }
-  } catch (err) {
-    console.error("❌ Erro ao carregar settings:", err);
-    defaultMessage = "";
-    defaultMessageInput.value = "";
-    defaultWindowInput.value = 1440;
   }
-}
 
-// =====================================
-// FUNÇÃO: CARREGAR TUDO
-// =====================================
-async function loadAll() {
-  await loadSettings();
-  await loadRules();
-}
+  function exportConfig() {
+    const menu = buildMenuFromUI();
+    const rules = currentRules || [];
+    const settings = {
+      defaultMessage: settingsDefaultMessage.value || "",
+      windowSeconds: parseWindowSeconds(settingsWindowSeconds.value)
+    };
+    const blob = new Blob([JSON.stringify({ menu, rules, settings }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `config_${token}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
-// =====================================
-// EVENT LISTENERS
-// =====================================
-btnAdd.addEventListener("click", addRule);
-btnSave.addEventListener("click", saveRules);
+  async function importConfig(file) {
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const normalized = normalizeConfig(payload);
+      loadToUI(normalized.menu, normalized.rules, normalized.settings);
+      showMessage("Config importada. Revise e salve.");
+    } catch (err) {
+      console.error("❌ Erro ao importar:", err);
+      showMessage("Erro ao importar JSON", "error");
+    }
+  }
 
-// Carregar tudo ao abrir a página
-document.addEventListener("DOMContentLoaded", loadAll);
+  function applyAdvanced() {
+    const menu = safeJsonParse(menuTextarea.value, null);
+    const rules = safeJsonParse(rulesTextarea.value, []);
+    const settings = safeJsonParse(settingsTextarea.value, { defaultMessage: "", windowSeconds: 86400 });
+    const validationError = validateConfig(menu, rules, settings);
+    if (validationError) {
+      showMessage(validationError, "error");
+      return;
+    }
+    loadToUI(menu, rules, settings);
+    showMessage("JSON avançado aplicado");
+  }
 
-console.log("✅ messages.js carregado");
+  async function listSessions() {
+    try {
+      const res = await fetch(`${API_BASE}/sessions`);
+      if (!res.ok) throw new Error("Erro ao listar sessões");
+      const data = await res.json();
+      renderSessions(data.sessions || []);
+    } catch (err) {
+      console.error("❌ Erro ao listar sessões:", err);
+      showMessage("Erro ao listar sessões", "error");
+    }
+  }
+
+  async function clearSessions() {
+    try {
+      const res = await fetch(`${API_BASE}/sessions/clear`, { method: "POST" });
+      if (!res.ok) throw new Error("Erro ao limpar sessões");
+      await res.json();
+      showMessage("Sessões limpas com sucesso");
+      renderSessions([]);
+    } catch (err) {
+      console.error("❌ Erro ao limpar sessões:", err);
+      showMessage("Erro ao limpar sessões", "error");
+    }
+  }
+
+  function setupSocket() {
+    const socket = io();
+    socket.on("connect", () => {
+      socket.emit("joinTenant", { token });
+    });
+    socket.on("status", (status) => {
+      if (!statusChip) return;
+      statusChip.textContent = `Status: ${status}`;
+      const statusLower = String(status || "").toLowerCase();
+      statusChip.classList.remove("status-ready", "status-authenticated", "status-disconnected", "status-waiting");
+      if (statusLower.includes("pronto") || statusLower.includes("ready")) {
+        statusChip.classList.add("status-ready");
+      } else if (statusLower.includes("autentic") || statusLower.includes("authenticated")) {
+        statusChip.classList.add("status-authenticated");
+      } else if (statusLower.includes("desconect") || statusLower.includes("disconnected")) {
+        statusChip.classList.add("status-disconnected");
+      } else {
+        statusChip.classList.add("status-waiting");
+      }
+    });
+  }
+
+  btnAddBlock?.addEventListener("click", () => {
+    uiBlocks.push(createEmptyBlock(`MENU_${uiBlocks.length + 1}`));
+    renderBlocks();
+    syncAdvanced();
+  });
+  btnSave?.addEventListener("click", saveConfig);
+  btnLoad?.addEventListener("click", loadConfig);
+  btnExport?.addEventListener("click", exportConfig);
+  btnApplyAdvanced?.addEventListener("click", applyAdvanced);
+  btnListSessions?.addEventListener("click", listSessions);
+  btnClearSessions?.addEventListener("click", clearSessions);
+  fileImport?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (file) importConfig(file);
+  });
+
+  setupSocket();
+  loadConfig();
+  console.log("✅ messages.js carregado");
+});

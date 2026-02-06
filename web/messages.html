@@ -3,60 +3,107 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fazer Mensagens - WhatsApp Bot</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Configuração do Tenant</title>
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="container">
     <div class="messages-screen">
       <div class="header">
-        <h1>📨 Fazer Mensagens</h1>
-        <a href="/" class="btn btn-secondary">← Voltar</a>
-      </div>
-
-      <!-- SEÇÃO: MENSAGEM DEFAULT -->
-      <div class="default-message-section">
-        <h2>💬 Mensagem Default</h2>
-        <p class="help-text">
-          Será enviada somente quando não houver atividade com o contato nas últimas horas/minutos e nenhuma regra específica for acionada.
-        </p>
-        <textarea 
-          id="default-message-input" 
-          class="default-message-input" 
-          placeholder="Digite a mensagem padrão que será enviada automaticamente..."
-          rows="4"
-        ></textarea>
-
-        <div class="default-window-group">
-          <label for="default-window-input">Janela da mensagem default (minutos)</label>
-          <input 
-            type="number" 
-            id="default-window-input" 
-            class="default-window-input" 
-            min="0.17" 
-            max="10080" 
-            value="1440"
-            placeholder="1440 (24 horas)"
-          >
-          <p class="window-help-text">Mínimo: 10s (≈0.17min), Máximo: 7 dias (10080min). Padrão: 1440min (24h)</p>
+        <div class="header-left">
+          <div class="title-row">
+            <h1 id="bot-name">🤖 Bot do Tenant</h1>
+            <span class="status-chip status-waiting" id="status-chip">Status: aguardando</span>
+          </div>
+          <p class="subtitle">Gerencie as mensagens e opções do seu atendimento</p>
+        </div>
+        <div class="button-group">
+          <a id="btn-back" href="#" class="btn btn-secondary">← Voltar</a>
         </div>
       </div>
 
-      <!-- SEÇÃO: REGRAS -->
-      <div class="rules-section">
-        <h2>📋 Regras Específicas</h2>
-        <div id="rules-container" class="rules-container">
-          <!-- Linhas de regras serão adicionadas aqui dinamicamente -->
+      <div id="ui-message" class="status-container" style="display:none;"></div>
+
+      <section class="section-card">
+        <div class="section-header">
+          <h2>💬 Mensagens do bot</h2>
+          <button id="btn-add-block" class="btn btn-primary" type="button">Adicionar nova mensagem</button>
         </div>
-      </div>
-      
-      <div class="button-group">
-        <button id="btn-add" class="btn btn-secondary">Adicionar Regra</button>
-        <button id="btn-save" class="btn btn-primary">Salvar Tudo</button>
-      </div>
+        <div id="blocks-container" class="blocks-container"></div>
+      </section>
+
+      <section class="section-card">
+        <h2>⚙️ Configurações simples</h2>
+        <div class="form-grid">
+          <div>
+            <label for="settings-default-message">Mensagem automática</label>
+            <textarea id="settings-default-message" rows="4" class="default-message-input" placeholder="Ex: Olá! Em breve retornamos."></textarea>
+          </div>
+          <div>
+            <label for="settings-window-seconds">Tempo de inatividade (segundos)</label>
+            <input id="settings-window-seconds" type="number" min="10" step="1" class="default-window-input" />
+            <p class="help-text">Define a janela para envio automático.</p>
+          </div>
+        </div>
+        <div class="button-group">
+          <button id="btn-save" class="btn btn-success" type="button">Salvar configurações</button>
+        </div>
+      </section>
+
+      <section class="section-card">
+        <details id="advanced-section">
+          <summary>Avançado (JSON, importação e sessões)</summary>
+          <div class="advanced-content">
+            <div class="advanced-grid">
+              <div>
+                <h3>Menu JSON</h3>
+                <textarea id="menu-json" rows="12" class="default-message-input"></textarea>
+              </div>
+              <div>
+                <h3>Rules JSON</h3>
+                <textarea id="rules-json" rows="12" class="default-message-input"></textarea>
+              </div>
+              <div>
+                <h3>Settings JSON</h3>
+                <textarea id="settings-json" rows="12" class="default-message-input"></textarea>
+              </div>
+            </div>
+
+            <div class="button-group">
+              <button id="btn-load" class="btn btn-secondary" type="button">Carregar do servidor</button>
+              <button id="btn-apply-advanced" class="btn btn-secondary" type="button">Aplicar JSON avançado</button>
+              <button id="btn-export" class="btn btn-secondary" type="button">Exportar JSON</button>
+              <label class="btn btn-secondary" for="file-import">Importar JSON</label>
+              <input id="file-import" type="file" accept="application/json" style="display:none;" />
+            </div>
+
+            <div class="rules-section">
+              <h3>🧪 Sessões ativas</h3>
+              <div class="button-group">
+                <button id="btn-list-sessions" class="btn btn-secondary" type="button">Listar sessões</button>
+                <button id="btn-clear-sessions" class="btn btn-secondary" type="button">Limpar sessões</button>
+              </div>
+              <div class="rules-container">
+                <table class="sessions-table">
+                  <thead>
+                    <tr>
+                      <th>chatId</th>
+                      <th>step</th>
+                      <th>stackLen</th>
+                      <th>updatedAt</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sessions-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
     </div>
   </div>
 
-  <script src="messages.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/messages.js"></script>
 </body>
 </html>

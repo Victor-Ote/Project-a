@@ -542,13 +542,13 @@ function attachBotHandlers(client, tenantId) {
         // =====================================
         // TENTAR ENVIAR MENSAGEM DEFAULT
         // =====================================
-        const settings = getSettingsSync();
-        const defaultMessage = settings.defaultMessage.trim();
+        const settings = tenantConfig?.__settings || SETTINGS_DEFAULT;
+        const defaultMessage = (settings.defaultMessage || "").trim();
 
         if (defaultMessage) {
           // Determinar janela: ENV > settings > default (24h)
           const windowSeconds = parseInt(process.env.DEFAULT_WINDOW_SECONDS, 10) || 
-                               settings.defaultWindowSeconds || 
+                               settings.windowSeconds || 
                                (24 * 60 * 60);
 
           // Verificar se deve enviar default (janela configurável + ignorar msg atual)
@@ -1616,45 +1616,54 @@ client.initialize().catch((err) => {
 // SOCKET.IO: CONEXÃO DO CLIENTE
 // =====================================
 io.on("connection", async (socket) => {
-  let token = socket.handshake.query?.token;
-  
-  // Normalizar token
-  token = normalizeToken(token);
-  
-  // Validar presença de token
-  if (!token || token.length < 5) {
-    console.log("[SOCKET] ❌ connect sem token válido, id=", socket.id, "query=", socket.handshake.query);
-    socket.disconnect(true);
-    return;
-  }
+  let joinedTenantId = null;
 
-  // Resolver tenant pelo token
-  const tenant = await getOrCreateTenantByToken(token);
-  if (!tenant || tenant.error) {
-    console.log("[SOCKET] ❌ token inválido", token, "socket=", socket.id);
-    socket.disconnect(true);
-    return;
-  }
+  async function joinTenantByToken(rawToken) {
+    let token = normalizeToken(rawToken);
 
-  // Entrar na sala do tenant (ISOLAMENTO)
-  socket.join(tenant.tenantId);
-  console.log("[SOCKET] ✅ socket joined tenant", tenant.tenantId, "socket=", socket.id, "token=", token);
-
-  // Enviar status/QR se já existir client cached
-  const cached = CLIENTS_MAP.get(tenant.tenantId);
-  if (cached) {
-    if (cached.qrDataUrl) {
-      console.log("[SOCKET] enviando QR cached para tenant", tenant.tenantId);
-      socket.emit("qr", cached.qrDataUrl);
+    if (!token || token.length < 5) {
+      console.log("[SOCKET] ❌ token inválido para joinTenant, id=", socket.id, "token=", rawToken);
+      return;
     }
-    if (cached.status) {
-      console.log("[SOCKET] enviando status cached para tenant", tenant.tenantId, "status=", cached.status);
-      socket.emit("status", cached.status);
+
+    const tenant = await getOrCreateTenantByToken(token);
+    if (!tenant || tenant.error) {
+      console.log("[SOCKET] ❌ token inválido", token, "socket=", socket.id);
+      return;
+    }
+
+    if (joinedTenantId && joinedTenantId !== tenant.tenantId) {
+      socket.leave(joinedTenantId);
+    }
+
+    joinedTenantId = tenant.tenantId;
+    socket.join(tenant.tenantId);
+    console.log("[SOCKET] ✅ socket joined tenant", tenant.tenantId, "socket=", socket.id, "token=", token);
+
+    const cached = CLIENTS_MAP.get(tenant.tenantId);
+    if (cached) {
+      if (cached.qrDataUrl) {
+        console.log("[SOCKET] enviando QR cached para tenant", tenant.tenantId);
+        socket.emit("qr", cached.qrDataUrl);
+      }
+      if (cached.status) {
+        console.log("[SOCKET] enviando status cached para tenant", tenant.tenantId, "status=", cached.status);
+        socket.emit("status", cached.status);
+      }
     }
   }
+
+  const tokenFromQuery = socket.handshake.query?.token;
+  if (tokenFromQuery) {
+    await joinTenantByToken(tokenFromQuery);
+  }
+
+  socket.on("joinTenant", async (payload) => {
+    await joinTenantByToken(payload?.token);
+  });
 
   socket.on("disconnect", () => {
-    console.log("🌐 Cliente desconectado:", socket.id, "tenant=", tenant.tenantId);
+    console.log("🌐 Cliente desconectado:", socket.id, "tenant=", joinedTenantId);
   });
 });
 
@@ -1666,6 +1675,10 @@ app.get("/", (req, res) => {
 });
 
 app.get("/messages", (req, res) => {
+  res.sendFile(path.join(__dirname, "web", "messages.html"));
+});
+
+app.get("/t/:token/messages", (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
 });
 
