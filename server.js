@@ -6,7 +6,6 @@ const fs = require("fs");
 const qrcode = require("qrcode");
 const Database = require("better-sqlite3");
 const { Client, MessageMedia, LocalAuth } = require("whatsapp-web.js");
-const { findMatchingRule } = require("./src/rules/rulesStore");
 const { getSettingsSync, saveSettingsSync } = require("./src/settings/settingsStore");
 const { markActivity, markDefaultSent } = require("./src/state/contactStateStore");
 const { shouldSendDefault } = require("./src/bot/defaultReply");
@@ -470,6 +469,57 @@ function attachBotHandlers(client, tenantId) {
 
       const tenantConfig = getTenantConfig(tenantId);
 
+      // Função de digitação
+      const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+      const typing = async () => {
+        await delay(2000);
+        await chat.sendStateTyping();
+        await delay(2000);
+      };
+
+      let responseSent = false;
+
+      // =====================================
+      // TENTAR CORRESPONDÊNCIA COM REGRAS (PRIORIDADE)
+      // =====================================
+      const tenantRules = (tenantConfig && (tenantConfig.__rules || tenantConfig.rules)) || [];
+      if (Array.isArray(tenantRules) && tenantRules.length > 0) {
+        console.log("[RULE] tenant=", tenantId, "rules=", tenantRules.length);
+      }
+
+      let matchedRule = null;
+      try {
+        matchedRule = findMatchingRuleFromTenant(tenantRules, messageBody);
+      } catch (e) {
+        console.warn("[RULE] erro ao buscar regra tenant=", tenantId, e && e.message);
+      }
+
+      if (matchedRule && matchedRule.reply && typeof matchedRule.reply.text === "string") {
+        const replyText = matchedRule.reply.text.trim();
+        if (replyText) {
+          console.log("[RULE] matched tenant=", tenantId, "name=\"", matchedRule.name || "(sem nome)", "\" type=", (matchedRule.match && matchedRule.match.type) || "equals");
+          console.log("[BOT] responding tenant=", tenantId, "to=", msg.from);
+          await typing();
+          await client.sendMessage(msg.from, replyText);
+          responseSent = true;
+          markActivity(contactId);
+
+          try {
+            resetSession(tenantId, chatId);
+            if (session) {
+              session.mode = null;
+              session.stack = [];
+              session.step = null;
+            }
+            console.log("[RULE] flow cleared (exit steps) tenant=", tenantId, "chatId=", chatId);
+          } catch (e) {
+            console.warn("[RULE] failed to clear flow", e && e.message);
+          }
+
+          return;
+        }
+      }
+
       // Adaptar menu para novo formato (compatibilidade)
       const menu = adaptLegacyMenuFormat(tenantConfig);
       const triggers = menu?.triggers || [];
@@ -514,42 +564,17 @@ function attachBotHandlers(client, tenantId) {
 
       console.log("[COMMAND] Nenhum comando:", chatId);
 
-      // Função de digitação
-      const delay = (ms) => new Promise((res) => setTimeout(res, ms));
-      const typing = async () => {
-        await delay(2000);
-        await chat.sendStateTyping();
-        await delay(2000);
-      };
-
-      let responseSent = false;
-
-      // =====================================
-      // TENTAR CORRESPONDÊNCIA COM REGRAS
-      // =====================================
-      const matchedRule = findMatchingRule(messageBody);
-      
-      if (matchedRule) {
-        // Uma regra foi correspondida - usar a resposta da regra
-        console.log(`📨 [${contactId}] Usando resposta da regra: "${matchedRule.sent}"`);
-        console.log("[BOT] responding tenant=", tenantId, "to=", msg.from);
-        await typing();
-        await client.sendMessage(msg.from, matchedRule.sent);
-        responseSent = true;
-        markActivity(contactId); // Registrar após enviar
-      } 
-      else {
+      if (!responseSent) {
         // =====================================
         // TENTAR ENVIAR MENSAGEM DEFAULT
         // =====================================
-        const settings = tenantConfig?.__settings || SETTINGS_DEFAULT;
+        const settings = (tenantConfig && (tenantConfig.__settings || tenantConfig.settings)) || {};
         const defaultMessage = (settings.defaultMessage || "").trim();
 
         if (defaultMessage) {
-          // Determinar janela: ENV > settings > default (24h)
-          const windowSeconds = parseInt(process.env.DEFAULT_WINDOW_SECONDS, 10) || 
-                               settings.windowSeconds || 
-                               (24 * 60 * 60);
+          const windowSeconds = Number.isFinite(settings.windowSeconds)
+            ? settings.windowSeconds
+            : (24 * 60 * 60);
 
           // Verificar se deve enviar default (janela configurável + ignorar msg atual)
           const canSendDefault = await shouldSendDefault(chat, contactId, { 
@@ -819,6 +844,61 @@ function normalizeInput(input) {
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
+}
+
+function stripAccentsSafe(str) {
+  try {
+    return (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  } catch (e) {
+    return (str || "");
+  }
+}
+
+function normalizeForRule(text, matchCfg) {
+  let s = (text == null ? "" : String(text));
+  const ignoreCase = !!(matchCfg && matchCfg.ignoreCase);
+  const removeAccents = !!(matchCfg && matchCfg.removeAccents);
+
+  if (removeAccents) s = stripAccentsSafe(s);
+  if (ignoreCase) s = s.toLowerCase();
+
+  try {
+    if (typeof normalizeInput === "function") {
+      s = normalizeInput(s);
+      if (removeAccents) s = stripAccentsSafe(s);
+      if (ignoreCase) s = s.toLowerCase();
+    }
+  } catch (e) {}
+
+  return s;
+}
+
+function matchSingleRule(rule, messageText) {
+  if (!rule || rule.enabled === false) return false;
+  if (!rule.match || typeof rule.match.value !== "string") return false;
+
+  const type = rule.match.type || "equals";
+  const msg = normalizeForRule(messageText, rule.match);
+  const val = normalizeForRule(rule.match.value, rule.match);
+
+  if (type === "equals") return msg === val;
+  if (type === "contains") return msg.indexOf(val) >= 0;
+  if (type === "startsWith") return msg.startsWith(val);
+
+  return false;
+}
+
+function findMatchingRuleFromTenant(rules, messageText) {
+  if (!Array.isArray(rules) || rules.length === 0) return null;
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    try {
+      if (matchSingleRule(r, messageText)) return r;
+    } catch (e) {
+      console.warn("[RULE] erro ao avaliar regra", r && r.name, e && e.message);
+    }
+  }
+  return null;
 }
 
 function validateMenuSchema(menu) {
@@ -1463,6 +1543,56 @@ client.on("message", async (msg) => {
     console.log(`[SESSION] Sessão ativa confirmada para ${tenantId}:${chatId}`);
 
     const tenantConfig = getTenantConfig(tenantId);
+
+    // Função de digitação
+    const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+    const typing = async () => {
+      await delay(2000);
+      await chat.sendStateTyping();
+      await delay(2000);
+    };
+
+    let responseSent = false;
+
+    // =====================================
+    // TENTAR CORRESPONDÊNCIA COM REGRAS (PRIORIDADE)
+    // =====================================
+    const tenantRules = (tenantConfig && (tenantConfig.__rules || tenantConfig.rules)) || [];
+    if (Array.isArray(tenantRules) && tenantRules.length > 0) {
+      console.log("[RULE] tenant=", tenantId, "rules=", tenantRules.length);
+    }
+
+    let matchedRule = null;
+    try {
+      matchedRule = findMatchingRuleFromTenant(tenantRules, messageBody);
+    } catch (e) {
+      console.warn("[RULE] erro ao buscar regra tenant=", tenantId, e && e.message);
+    }
+
+    if (matchedRule && matchedRule.reply && typeof matchedRule.reply.text === "string") {
+      const replyText = matchedRule.reply.text.trim();
+      if (replyText) {
+        console.log("[RULE] matched tenant=", tenantId, "name=\"", matchedRule.name || "(sem nome)", "\" type=", (matchedRule.match && matchedRule.match.type) || "equals");
+        await typing();
+        await client.sendMessage(msg.from, replyText);
+        responseSent = true;
+        markActivity(contactId);
+
+        try {
+          resetSession(tenantId, chatId);
+          if (session) {
+            session.mode = null;
+            session.stack = [];
+            session.step = null;
+          }
+          console.log("[RULE] flow cleared (exit steps) tenant=", tenantId, "chatId=", chatId);
+        } catch (e) {
+          console.warn("[RULE] failed to clear flow", e && e.message);
+        }
+
+        return;
+      }
+    }
     const isMenuCommand = tenantConfig.triggers.includes(body);
 
     if (isMenuCommand) {
@@ -1485,41 +1615,17 @@ client.on("message", async (msg) => {
 
     console.log("[COMMAND] Nenhum comando:", chatId);
 
-    // Função de digitação
-    const delay = (ms) => new Promise((res) => setTimeout(res, ms));
-    const typing = async () => {
-      await delay(2000);
-      await chat.sendStateTyping();
-      await delay(2000);
-    };
-
-    let responseSent = false;
-
-    // =====================================
-    // TENTAR CORRESPONDÊNCIA COM REGRAS
-    // =====================================
-    const matchedRule = findMatchingRule(messageBody);
-    
-    if (matchedRule) {
-      // Uma regra foi correspondida - usar a resposta da regra
-      console.log(`📨 [${contactId}] Usando resposta da regra: "${matchedRule.sent}"`);
-      await typing();
-      await client.sendMessage(msg.from, matchedRule.sent);
-      responseSent = true;
-      markActivity(contactId); // Registrar após enviar
-    } 
-    else {
+    if (!responseSent) {
       // =====================================
       // TENTAR ENVIAR MENSAGEM DEFAULT
       // =====================================
-      const settings = tenantConfig?.__settings || SETTINGS_DEFAULT;
+      const settings = (tenantConfig && (tenantConfig.__settings || tenantConfig.settings)) || {};
       const defaultMessage = (settings.defaultMessage || "").trim();
 
       if (defaultMessage) {
-        // Determinar janela: ENV > settings > default (24h)
-        const windowSeconds = parseInt(process.env.DEFAULT_WINDOW_SECONDS, 10) || 
-                 settings.windowSeconds || 
-                 (24 * 60 * 60);
+        const windowSeconds = Number.isFinite(settings.windowSeconds)
+          ? settings.windowSeconds
+          : (24 * 60 * 60);
 
         // Verificar se deve enviar default (janela configurável + ignorar msg atual)
         const canSendDefault = await shouldSendDefault(chat, contactId, { 
@@ -1680,6 +1786,10 @@ app.get("/messages", (req, res) => {
 
 app.get("/t/:token/messages", (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
+});
+
+app.get("/t/:token/rules", (req, res) => {
+  res.sendFile(path.join(__dirname, "web", "rules.html"));
 });
 
 app.get("/t/:token", async (req, res) => {

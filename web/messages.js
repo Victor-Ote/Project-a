@@ -19,6 +19,25 @@ function showMessage(text, type = "info") {
   }
 }
 
+function showToast(type, message) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type === "error" ? "error" : "success"}`;
+  toast.innerHTML = `
+    <span>${message}</span>
+    <button type="button" aria-label="Fechar">×</button>
+  `;
+
+  const closeBtn = toast.querySelector("button");
+  const remove = () => toast.remove();
+  closeBtn.addEventListener("click", remove);
+
+  container.appendChild(toast);
+  setTimeout(remove, 3000);
+}
+
 function safeJsonParse(text, fallback) {
   try {
     return JSON.parse(text);
@@ -200,7 +219,7 @@ function createOptionRow(option, onChange, stepOptions) {
   return row;
 }
 
-function createBlockCard(block, onChange, onRemove, stepOptions) {
+function createBlockCard(block, onChange, onRemove, stepOptions, token) {
   const card = document.createElement("div");
   card.className = "block-card";
 
@@ -208,11 +227,40 @@ function createBlockCard(block, onChange, onRemove, stepOptions) {
   header.className = "block-header";
   header.innerHTML = `
     <strong>${block.stepId}</strong>
-    <button class="btn btn-danger" type="button">Remover</button>
+    <div class="option-actions">
+      <button class="btn btn-secondary" type="button" data-action="toggle">▾</button>
+      <button class="btn btn-danger" type="button" data-action="remove">Remover</button>
+    </div>
   `;
 
-  const removeBtn = header.querySelector("button");
+  const removeBtn = header.querySelector("button[data-action='remove']");
+  const toggleBtn = header.querySelector("button[data-action='toggle']");
+
   removeBtn.addEventListener("click", () => onRemove(block));
+
+  function getCollapseKey() {
+    return `ui:collapsed:${token}:${block.stepId}`;
+  }
+
+  function setCollapsed(collapsed) {
+    if (collapsed) {
+      card.classList.add("collapsed");
+      toggleBtn.textContent = "▸";
+      localStorage.setItem(getCollapseKey(), "1");
+    } else {
+      card.classList.remove("collapsed");
+      toggleBtn.textContent = "▾";
+      localStorage.removeItem(getCollapseKey());
+    }
+  }
+
+  toggleBtn.addEventListener("click", () => {
+    const isCollapsed = card.classList.contains("collapsed");
+    setCollapsed(!isCollapsed);
+  });
+
+  const body = document.createElement("div");
+  body.className = "block-body";
 
   const grid = document.createElement("div");
   grid.className = "block-grid";
@@ -232,19 +280,6 @@ function createBlockCard(block, onChange, onRemove, stepOptions) {
   `;
 
   const [idInput, textArea, fallbackInput] = grid.querySelectorAll("input, textarea");
-  idInput.addEventListener("change", () => {
-    block.stepId = idInput.value || "MENU_INICIAL";
-    header.querySelector("strong").textContent = block.stepId;
-    onChange(true);
-  });
-  textArea.addEventListener("input", () => {
-    block.text = textArea.value;
-    onChange(false);
-  });
-  fallbackInput.addEventListener("input", () => {
-    block.fallbackText = fallbackInput.value;
-    onChange(false);
-  });
 
   const optionsContainer = document.createElement("div");
   const optionsHeader = document.createElement("div");
@@ -263,14 +298,14 @@ function createBlockCard(block, onChange, onRemove, stepOptions) {
   function renderOptions() {
     optionsList.innerHTML = "";
     block.options.forEach((opt, idx) => {
-      const row = createOptionRow(opt, onChange, stepOptions());
+      const row = createOptionRow(opt, notifyChange, stepOptions());
       const remove = document.createElement("button");
       remove.className = "btn btn-danger";
       remove.textContent = "Remover";
       remove.type = "button";
       remove.addEventListener("click", () => {
         block.options.splice(idx, 1);
-        onChange(true);
+        notifyChange(true);
       });
       const actionWrap = document.createElement("div");
       actionWrap.className = "option-actions";
@@ -283,13 +318,42 @@ function createBlockCard(block, onChange, onRemove, stepOptions) {
   optionsContainer.appendChild(optionsHeader);
   optionsContainer.appendChild(optionsList);
 
+  const summary = document.createElement("div");
+  summary.className = "block-summary";
+  summary.textContent = `${block.options.length} opção(ões)`;
+
+  function notifyChange(shouldRerender) {
+    summary.textContent = `${block.options.length} opção(ões)`;
+    onChange(shouldRerender);
+  }
+
+  idInput.addEventListener("change", () => {
+    block.stepId = idInput.value || "MENU_INICIAL";
+    header.querySelector("strong").textContent = block.stepId;
+    notifyChange(true);
+  });
+  textArea.addEventListener("input", () => {
+    block.text = textArea.value;
+    notifyChange(false);
+  });
+  fallbackInput.addEventListener("input", () => {
+    block.fallbackText = fallbackInput.value;
+    notifyChange(false);
+  });
+
+  body.appendChild(grid);
+  body.appendChild(optionsContainer);
+
   card.appendChild(header);
-  card.appendChild(grid);
-  card.appendChild(optionsContainer);
+  card.appendChild(summary);
+  card.appendChild(body);
 
   renderOptions();
 
   card.renderOptions = renderOptions;
+
+  const initialCollapsed = localStorage.getItem(getCollapseKey()) === "1";
+  setCollapsed(initialCollapsed);
   return card;
 }
 
@@ -354,7 +418,7 @@ document.addEventListener("DOMContentLoaded", () => {
         syncAdvanced();
       }, (toRemove) => {
         if ((toRemove.stepId || "") === "MENU_INICIAL") {
-          showMessage("MENU_INICIAL não pode ser removido", "error");
+          showToast("error", "MENU_INICIAL não pode ser removido");
           return;
         }
 
@@ -369,9 +433,9 @@ document.addEventListener("DOMContentLoaded", () => {
           windowSeconds: parseWindowSeconds(settingsWindowSeconds.value)
         });
 
-        showMessage(`Menu ${toRemove.stepId} removido. ${result.removedRefsCount} opção(ões) atualizadas.`, "info");
+        showToast("success", `Menu ${toRemove.stepId} removido. ${result.removedRefsCount} opção(ões) atualizadas.`);
         saveConfig();
-      }, stepOptions);
+      }, stepOptions, token);
       blocksContainer.appendChild(card);
       card.renderOptions();
     });
@@ -467,10 +531,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const payload = await res.json();
       const normalized = normalizeConfig(payload);
       loadToUI(normalized.menu, normalized.rules, normalized.settings);
-      showMessage("Config carregada com sucesso");
+      showToast("success", "Config carregada com sucesso");
     } catch (err) {
       console.error("❌ Erro ao carregar config:", err);
-      showMessage("Erro ao carregar config", "error");
+      showToast("error", "Erro ao carregar config");
     }
   }
 
@@ -503,10 +567,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       syncAdvanced();
-      showMessage("Config salva com sucesso");
+      showToast("success", "Config salva com sucesso");
     } catch (err) {
       console.error("❌ Erro ao salvar config:", err);
-      showMessage("Erro ao salvar config", "error");
+      showToast("error", err?.message || "Erro ao salvar config");
     }
   }
 

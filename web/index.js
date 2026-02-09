@@ -20,8 +20,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   const manageLink = document.getElementById("manage-messages-link");
+  const rulesLink = document.getElementById("manage-rules-link");
   if (manageLink) {
     manageLink.href = `/t/${encodeURIComponent(token)}/messages`;
+  }
+  if (rulesLink) {
+    rulesLink.href = `/t/${encodeURIComponent(token)}/rules`;
   }
 
   // Criar socket e entrar no tenant

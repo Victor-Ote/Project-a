@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Palavras-chaves</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="messages-screen">
+      <div class="header">
+        <div class="header-left">
+          <div class="title-row">
+            <h1 id="bot-name">🤖 Bot do Tenant</h1>
+            <span class="status-chip status-waiting" id="status-chip">Status: aguardando</span>
+          </div>
+          <p class="subtitle">Gerencie palavras‑chaves e respostas do seu atendimento</p>
+        </div>
+        <div class="button-group">
+          <a id="btn-back" href="#" class="btn btn-secondary">← Voltar</a>
+        </div>
+      </div>
+
+      <div id="ui-message" class="status-container" style="display:none;"></div>
+
+      <section class="section-card">
+        <div class="section-header">
+          <h2>🔑 Palavras‑chaves</h2>
+          <div class="button-group">
+            <button id="btn-add-rule" class="btn btn-primary" type="button">Adicionar regra</button>
+            <button id="btn-save-rules" class="btn btn-success" type="button">Salvar regras</button>
+          </div>
+        </div>
+
+        <div id="rules-container" class="blocks-container"></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/rules.js"></script>
+</body>
+</html>
