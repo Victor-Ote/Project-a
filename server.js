@@ -3,8 +3,11 @@ const { createServer } = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const qrcode = require("qrcode");
 const Database = require("better-sqlite3");
+const session = require("express-session");
+const bcrypt = require("bcryptjs");
 const { Client, MessageMedia, LocalAuth } = require("whatsapp-web.js");
 const { getSettingsSync, saveSettingsSync } = require("./src/settings/settingsStore");
 const { markActivity, markDefaultSent } = require("./src/state/contactStateStore");
@@ -53,10 +56,20 @@ function initDb() {
     CREATE TABLE IF NOT EXISTS tenants (
       token TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
+      user_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS configs (
       tenant_id TEXT PRIMARY KEY,
       menu_json TEXT,
@@ -96,19 +109,50 @@ function initDb() {
   } catch (err) {
     console.error("[DB][MIGRATION][ERROR] ao criar índice:", err.message);
   }
+
+  // =====================================
+  // MIGRAÇÃO: users + user_id em tenants
+  // =====================================
+  try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);");
+    console.log("[DB][MIGRATION] Índice idx_users_email garantido");
+  } catch (err) {
+    console.error("[DB][MIGRATION][ERROR] ao criar índice users:", err.message);
+  }
+
+  try {
+    const tenantsInfo = db.prepare("PRAGMA table_info(tenants)").all();
+    const hasUserId = tenantsInfo.some(col => col.name === "user_id");
+    if (!hasUserId) {
+      console.log("[DB][MIGRATION] Adicionando coluna user_id à tabela tenants");
+      db.exec("ALTER TABLE tenants ADD COLUMN user_id TEXT;");
+      console.log("[DB][MIGRATION] user_id added");
+    } else {
+      console.log("[DB][MIGRATION] user_id already exists");
+    }
+  } catch (err) {
+    console.error("[DB][MIGRATION][ERROR] ao adicionar user_id:", err.message);
+  }
+
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_user_id_unique ON tenants(user_id) WHERE user_id IS NOT NULL;");
+    console.log("[DB][MIGRATION] Índice idx_tenants_user_id_unique garantido");
+  } catch (err) {
+    console.error("[DB][MIGRATION][ERROR] ao criar índice user_id:", err.message);
+  }
 }
 
 async function dbGetTenant(token) {
   const normalizedToken = normalizeToken(token);
   if (!normalizedToken) return null;
   
-  const stmt = db.prepare("SELECT token, tenant_id FROM tenants WHERE token = ?");
+  const stmt = db.prepare("SELECT token, tenant_id, user_id FROM tenants WHERE token = ?");
   const result = stmt.get(normalizedToken);
   console.log("[DB] Tenant SELECT:", normalizedToken, result ? "true" : "false");
   return result || null;
 }
 
-async function dbInsertTenant(token, tenantId) {
+async function dbInsertTenant(token, tenantId, userId) {
   const normalizedToken = normalizeToken(token);
   if (!normalizedToken) {
     console.error("[DB] Não posso inserir tenant com token vazio");
@@ -117,11 +161,11 @@ async function dbInsertTenant(token, tenantId) {
   
   const now = new Date().toISOString();
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO tenants (token, tenant_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT OR REPLACE INTO tenants (token, tenant_id, user_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
   `);
-  stmt.run(normalizedToken, tenantId, now, now);
-  console.log("[DB] Tenant UPSERT:", normalizedToken, tenantId);
+  stmt.run(normalizedToken, tenantId, userId || null, now, now);
+  console.log("[DB] Tenant UPSERT:", normalizedToken, tenantId, "userId=", userId || null);
   return true;
 }
 
@@ -156,6 +200,92 @@ function dbGetConfig(token) {
 
 function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function genId(prefix) {
+  return prefix + crypto.randomBytes(6).toString("hex");
+}
+
+function sanitizeTenantId(token) {
+  const safe = String(token || "").replace(/[^a-zA-Z0-9]/g, "_");
+  return "t_" + safe.slice(0, 8) + "_" + crypto.randomBytes(2).toString("hex");
+}
+
+function dbGetUserByEmail(email) {
+  const stmt = db.prepare("SELECT id, email, password_hash, full_name, created_at, updated_at FROM users WHERE email = ?");
+  return stmt.get(email) || null;
+}
+
+function dbGetUserById(id) {
+  const stmt = db.prepare("SELECT id, email, password_hash, full_name, created_at, updated_at FROM users WHERE id = ?");
+  return stmt.get(id) || null;
+}
+
+function dbUpdateUserPassword(userId, newPassword) {
+  const passwordHash = bcrypt.hashSync(newPassword, 10);
+  const stmt = db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?");
+  const result = stmt.run(passwordHash, nowIso(), userId);
+  return result.changes > 0;
+}
+
+function dbUpdateUserProfile(userId, profile) {
+  const user = dbGetUserById(userId);
+  if (!user) return false;
+  const nextEmail = profile.email || user.email;
+  const nextName = profile.fullName || user.full_name;
+  const stmt = db.prepare("UPDATE users SET email = ?, full_name = ?, updated_at = ? WHERE id = ?");
+  const result = stmt.run(nextEmail, nextName, nowIso(), userId);
+  return result.changes > 0;
+}
+
+function dbGetTenantByToken(token) {
+  const normalizedToken = normalizeToken(token);
+  if (!normalizedToken) return null;
+  const stmt = db.prepare("SELECT token, tenant_id, user_id FROM tenants WHERE token = ?");
+  return stmt.get(normalizedToken) || null;
+}
+
+function dbGetTenantByUserId(userId) {
+  const stmt = db.prepare("SELECT token, tenant_id, user_id FROM tenants WHERE user_id = ?");
+  return stmt.get(userId) || null;
+}
+
+async function dbCreateUser(payload) {
+  const email = String(payload.email || "").trim().toLowerCase();
+  const password = String(payload.password || "");
+  const fullName = String(payload.fullName || "").trim();
+  const tokenOptional = payload.token ? String(payload.token).trim() : "";
+
+  if (!email || !password || !fullName) {
+    throw new Error("email, password e fullName são obrigatórios");
+  }
+
+  const userId = genId("u_");
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const createdAt = nowIso();
+
+  const insertUser = db.prepare(`
+    INSERT INTO users (id, email, password_hash, full_name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  insertUser.run(userId, email, passwordHash, fullName, createdAt, createdAt);
+
+  const token = tokenOptional || userId;
+  const tenantId = sanitizeTenantId(token);
+
+  const insertTenant = db.prepare(`
+    INSERT OR REPLACE INTO tenants (token, tenant_id, user_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  insertTenant.run(normalizeToken(token), tenantId, userId, createdAt, createdAt);
+
+  await dbUpsertConfigByTenantId(tenantId, JSON.parse(JSON.stringify(MENU_CONFIG)), RULES_DEFAULT, SETTINGS_DEFAULT);
+
+  return { userId, token, tenantId };
 }
 
 
@@ -240,10 +370,45 @@ const io = new Server(httpServer, {
   }
 });
 
+const sessionMiddleware = session({
+  secret: process.env.SESSION_SECRET || "dev_secret_change_me",
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true }
+});
+
 app.use(express.json());
+app.use(sessionMiddleware);
 app.use(express.static(path.join(__dirname, "web")));
 
 initDb();
+
+function requireAuth(req, res, next) {
+  if (!req.session || !req.session.userId) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (req.headers["x-admin-key"] !== process.env.ADMIN_KEY) {
+    return res.status(403).json({ ok: false, error: "forbidden" });
+  }
+  next();
+}
+
+function requireTenantOwnership(req, res, next) {
+  const token = req.params.token;
+  const tenant = dbGetTenantByToken(token);
+  if (!tenant) {
+    return res.status(404).json({ ok: false, error: "token_not_found" });
+  }
+  if (tenant.user_id !== req.session.userId) {
+    return res.status(403).json({ ok: false, error: "token_not_owned" });
+  }
+  req.tenant = tenant;
+  next();
+}
 
 // =====================================
 // VARIÁVEIS GLOBAIS DO BOT
@@ -388,6 +553,50 @@ async function getOrCreateTenantByToken(token) {
   return tenant;
 }
 
+async function getTenantByTokenStrict(token) {
+  const normalizedToken = normalizeToken(token);
+
+  if (!normalizedToken) {
+    return null;
+  }
+
+  let tenant = null;
+  for (const [, t] of TENANTS) {
+    if (t.token === normalizedToken) {
+      tenant = t;
+      break;
+    }
+  }
+
+  if (tenant) {
+    return tenant;
+  }
+
+  const dbTenant = await dbGetTenant(normalizedToken);
+  if (!dbTenant) return null;
+
+  const tenantId = dbTenant.tenant_id;
+  const dbConfigObj = await dbGetConfig(normalizedToken);
+  const menu = dbConfigObj?.menu ?? JSON.parse(JSON.stringify(MENU_CONFIG));
+  const rules = dbConfigObj?.rules ?? RULES_DEFAULT;
+  const settings = dbConfigObj?.settings ?? SETTINGS_DEFAULT;
+
+  const config = Object.assign({}, menu, { __rules: rules, __settings: settings });
+
+  tenant = {
+    tenantId,
+    token: normalizedToken,
+    config,
+    createdAt: Date.now()
+  };
+
+  TENANTS.set(tenantId, tenant);
+  console.log("[TENANT] DB load (strict):", tenantId, "token=", normalizedToken,
+    "menu=", !!menu, "rules=", Array.isArray(rules) ? rules.length : 0);
+
+  return tenant;
+}
+
 async function getTenantFromRequest(req) {
   let { token } = req.params;
   
@@ -396,8 +605,11 @@ async function getTenantFromRequest(req) {
   if (!token || token.length < 5) {
     return { error: "Token inválido ou ausente", statusCode: 400 };
   }
-  const tenant = await getOrCreateTenantByToken(token);
-  return tenant;
+  const tenant = await getTenantByTokenStrict(token);
+  if (!tenant) {
+    return { error: "Token não encontrado", statusCode: 404, token };
+  }
+  return { token, tenantId: tenant.tenantId, tenant };
 }
 
 function getTenantConfig(tenantId) {
@@ -1721,10 +1933,21 @@ client.initialize().catch((err) => {
 // =====================================
 // SOCKET.IO: CONEXÃO DO CLIENTE
 // =====================================
+io.use((socket, next) => {
+  sessionMiddleware(socket.request, {}, next);
+});
+
 io.on("connection", async (socket) => {
   let joinedTenantId = null;
 
   async function joinTenantByToken(rawToken) {
+    const userId = socket.request?.session?.userId;
+    if (!userId) {
+      console.log("[SOCKET] ❌ unauthorized (no session) socket=", socket.id);
+      socket.emit("status", "unauthorized");
+      return;
+    }
+
     let token = normalizeToken(rawToken);
 
     if (!token || token.length < 5) {
@@ -1732,9 +1955,21 @@ io.on("connection", async (socket) => {
       return;
     }
 
-    const tenant = await getOrCreateTenantByToken(token);
-    if (!tenant || tenant.error) {
-      console.log("[SOCKET] ❌ token inválido", token, "socket=", socket.id);
+    const dbTenant = dbGetTenantByToken(token);
+    if (!dbTenant) {
+      console.log("[SOCKET] ❌ token não encontrado", token, "socket=", socket.id);
+      return;
+    }
+
+    if (dbTenant.user_id !== userId) {
+      console.log("[SOCKET] ❌ token not owned", token, "userId=", userId, "socket=", socket.id);
+      socket.emit("status", "forbidden");
+      return;
+    }
+
+    const tenant = await getTenantByTokenStrict(token);
+    if (!tenant) {
+      console.log("[SOCKET] ❌ tenant load failed", token, "socket=", socket.id);
       return;
     }
 
@@ -1777,22 +2012,130 @@ io.on("connection", async (socket) => {
 // ROTAS: PÁGINA PRINCIPAL
 // =====================================
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "web", "index.html"));
+  res.redirect("/login");
+});
+
+app.get("/login", (req, res) => {
+  res.sendFile(path.join(__dirname, "web", "login.html"));
+});
+
+app.post("/api/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, error: "email e password obrigatórios" });
+    }
+
+    const user = dbGetUserByEmail(email);
+    if (!user) {
+      return res.status(401).json({ ok: false, error: "credenciais inválidas" });
+    }
+
+    const valid = bcrypt.compareSync(password, user.password_hash);
+    if (!valid) {
+      return res.status(401).json({ ok: false, error: "credenciais inválidas" });
+    }
+
+    const tenant = dbGetTenantByUserId(user.id);
+    if (!tenant) {
+      return res.status(404).json({ ok: false, error: "tenant não encontrado" });
+    }
+
+    req.session.userId = user.id;
+    req.session.token = tenant.token;
+    req.session.tenantId = tenant.tenant_id;
+
+    console.log("[AUTH] login ok user=", user.id, "token=", tenant.token);
+
+    res.json({ ok: true, redirect: `/t/${tenant.token}/messages` });
+  } catch (err) {
+    console.error("[AUTH] login error:", err.message);
+    res.status(500).json({ ok: false, error: "erro interno" });
+  }
+});
+
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(err => {
+    if (err) {
+      console.error("[AUTH] logout error:", err.message);
+      return res.status(500).json({ ok: false, error: "erro ao deslogar" });
+    }
+    res.json({ ok: true });
+  });
+});
+
+app.get("/api/me", requireAuth, (req, res) => {
+  const user = dbGetUserById(req.session.userId);
+  if (!user) {
+    return res.status(404).json({ ok: false, error: "user não encontrado" });
+  }
+  res.json({
+    ok: true,
+    user: { id: user.id, email: user.email, full_name: user.full_name },
+    token: req.session.token
+  });
+});
+
+app.post("/api/admin/users", requireAdmin, async (req, res) => {
+  try {
+    const { email, password, fullName, token } = req.body;
+    const result = await dbCreateUser({ email, password, fullName, token });
+    console.log("[ADMIN] user created userId=", result.userId, "token=", result.token);
+    res.json({ ok: true, userId: result.userId, token: result.token, tenantId: result.tenantId });
+  } catch (err) {
+    console.error("[ADMIN] create user error:", err.message);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/admin/users/:userId/password", requireAdmin, (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ ok: false, error: "password obrigatório" });
+    }
+    const ok = dbUpdateUserPassword(userId, password);
+    if (!ok) {
+      return res.status(404).json({ ok: false, error: "user não encontrado" });
+    }
+    console.log("[ADMIN] user password updated userId=", userId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[ADMIN] update password error:", err.message);
+    res.status(500).json({ ok: false, error: "erro interno" });
+  }
+});
+
+app.put("/api/admin/users/:userId/profile", requireAdmin, (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { email, fullName } = req.body;
+    const ok = dbUpdateUserProfile(userId, { email, fullName });
+    if (!ok) {
+      return res.status(404).json({ ok: false, error: "user não encontrado" });
+    }
+    console.log("[ADMIN] user profile updated userId=", userId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[ADMIN] update profile error:", err.message);
+    res.status(500).json({ ok: false, error: "erro interno" });
+  }
 });
 
 app.get("/messages", (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
 });
 
-app.get("/t/:token/messages", (req, res) => {
+app.get("/t/:token/messages", requireAuth, requireTenantOwnership, (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
 });
 
-app.get("/t/:token/rules", (req, res) => {
+app.get("/t/:token/rules", requireAuth, requireTenantOwnership, (req, res) => {
   res.sendFile(path.join(__dirname, "web", "rules.html"));
 });
 
-app.get("/t/:token", async (req, res) => {
+app.get("/t/:token", requireAuth, requireTenantOwnership, async (req, res) => {
   try {
     const result = await getTenantFromRequest(req);
     if (result.error) {
@@ -1874,8 +2217,8 @@ const getConfigDbHandler = async (req, res) => {
 };
 
 // Rotas GET config
-app.get("/t/:token/config", getConfigHandler);
-app.get("/api/t/:token/config", getConfigDbHandler);
+app.get("/t/:token/config", requireAuth, requireTenantOwnership, getConfigHandler);
+app.get("/api/t/:token/config", requireAuth, requireTenantOwnership, getConfigDbHandler);
 
 // Handler PUT config (aceita novo e legado)
 const putConfigHandler = async (req, res) => {
@@ -1921,13 +2264,13 @@ const putConfigHandler = async (req, res) => {
 };
 
 // Rotas PUT config (original + alias)
-app.put("/t/:token/config", putConfigHandler);
-app.put("/api/t/:token/config", putConfigHandler);
+app.put("/t/:token/config", requireAuth, requireTenantOwnership, putConfigHandler);
+app.put("/api/t/:token/config", requireAuth, requireTenantOwnership, putConfigHandler);
 
 // =====================================
 // API REST: SALVAR CONFIG ESTRUTURADA POR TENANT
 // =====================================
-app.post("/api/t/:token/config", async (req, res) => {
+app.post("/api/t/:token/config", requireAuth, requireTenantOwnership, async (req, res) => {
   try {
     let { token } = req.params;
     token = normalizeToken(token);
@@ -1985,7 +2328,7 @@ app.post("/api/t/:token/config", async (req, res) => {
 // =====================================
 // API REST: DEBUG - SESSIONS (LIST)
 // =====================================
-app.get("/api/t/:token/sessions", async (req, res) => {
+app.get("/api/t/:token/sessions", requireAuth, requireTenantOwnership, async (req, res) => {
   try {
     let { token } = req.params;
     token = normalizeToken(token);
@@ -2031,7 +2374,7 @@ app.get("/api/t/:token/sessions", async (req, res) => {
 // =====================================
 // API REST: DEBUG - SESSIONS (CLEAR)
 // =====================================
-app.post("/api/t/:token/sessions/clear", async (req, res) => {
+app.post("/api/t/:token/sessions/clear", requireAuth, requireTenantOwnership, async (req, res) => {
   try {
     let { token } = req.params;
     token = normalizeToken(token);
@@ -2077,7 +2420,7 @@ app.post("/api/t/:token/sessions/clear", async (req, res) => {
 // =====================================
 // API REST: DEBUG - ENGINE SIMULATION
 // =====================================
-app.post("/api/t/:token/engine/simulate", async (req, res) => {
+app.post("/api/t/:token/engine/simulate", requireAuth, requireTenantOwnership, async (req, res) => {
   try {
     let { token } = req.params;
     token = normalizeToken(token);

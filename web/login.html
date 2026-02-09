@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login - WhatsApp Bot</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .login-container {
+      max-width: 400px;
+      margin: 100px auto;
+      padding: 40px;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .login-header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .login-header h1 {
+      margin: 0 0 8px 0;
+      font-size: 28px;
+      color: #1a1f36;
+    }
+
+    .login-header p {
+      margin: 0;
+      font-size: 14px;
+      color: #6b7280;
+    }
+
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .form-group label {
+      font-weight: 600;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .form-group input {
+      padding: 12px;
+      border: 1px solid #e6e8ee;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    .form-group input:focus {
+      outline: none;
+      border-color: #0066cc;
+    }
+
+    .login-button {
+      padding: 14px;
+      background: #0066cc;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .login-button:hover {
+      background: #0052a3;
+    }
+
+    .login-button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .error-message {
+      padding: 12px;
+      background: #fee;
+      border: 1px solid #fcc;
+      border-radius: 8px;
+      color: #c33;
+      font-size: 14px;
+      display: none;
+    }
+
+    .error-message.show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <div class="login-header">
+      <h1>🤖 WhatsApp Bot</h1>
+      <p>Entre com suas credenciais</p>
+    </div>
+
+    <form id="login-form" class="login-form">
+      <div class="form-group">
+        <label for="email">E-mail</label>
+        <input type="email" id="email" name="email" required autocomplete="email">
+      </div>
+
+      <div class="form-group">
+        <label for="password">Senha</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password">
+      </div>
+
+      <div id="error-message" class="error-message"></div>
+
+      <button type="submit" class="login-button" id="login-button">Entrar</button>
+    </form>
+  </div>
+
+  <script src="/login.js"></script>
+</body>
+</html>
