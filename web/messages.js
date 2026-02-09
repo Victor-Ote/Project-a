@@ -65,6 +65,31 @@ function parseWindowSeconds(value) {
   return Number.isFinite(parsed) ? parsed : 86400;
 }
 
+function removeStepAndFixReferences(menu, stepIdToRemove) {
+  const clone = JSON.parse(JSON.stringify(menu || {}));
+  const steps = clone.steps || {};
+  let removedRefsCount = 0;
+
+  if (!steps[stepIdToRemove]) {
+    return { menu: clone, removedRefsCount: 0 };
+  }
+
+  delete steps[stepIdToRemove];
+
+  Object.values(steps).forEach((step) => {
+    if (!Array.isArray(step.routes)) return;
+    const before = step.routes.length;
+    step.routes = step.routes.filter(route => {
+      const action = route?.action;
+      return !(action?.type === "GOTO" && action?.to === stepIdToRemove);
+    });
+    removedRefsCount += Math.max(0, before - step.routes.length);
+  });
+
+  clone.steps = steps;
+  return { menu: clone, removedRefsCount };
+}
+
 function renderSessions(list = []) {
   const tbody = document.getElementById("sessions-tbody");
   if (!tbody) return;
@@ -298,7 +323,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   if (botName) botName.textContent = `🤖 Bot do Tenant: ${token}`;
-  if (btnBack) btnBack.href = `/t/${encodeURIComponent(token)}`;
+  if (btnBack) btnBack.href = `${window.location.origin}/t/${encodeURIComponent(token)}`;
 
   let uiBlocks = [];
   let currentRules = [];
@@ -328,12 +353,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         syncAdvanced();
       }, (toRemove) => {
-        uiBlocks = uiBlocks.filter(b => b !== toRemove);
-        if (uiBlocks.length === 0) {
-          uiBlocks.push(createEmptyBlock("MENU_INICIAL"));
+        if ((toRemove.stepId || "") === "MENU_INICIAL") {
+          showMessage("MENU_INICIAL não pode ser removido", "error");
+          return;
         }
-        renderBlocks();
-        syncAdvanced();
+
+        const confirmed = window.confirm(`Remover o menu ${toRemove.stepId}? Isso também removerá opções que apontam para ele.`);
+        if (!confirmed) return;
+
+        const menu = buildMenuFromUI();
+        const result = removeStepAndFixReferences(menu, toRemove.stepId);
+
+        loadToUI(result.menu, currentRules, {
+          defaultMessage: settingsDefaultMessage.value || "",
+          windowSeconds: parseWindowSeconds(settingsWindowSeconds.value)
+        });
+
+        showMessage(`Menu ${toRemove.stepId} removido. ${result.removedRefsCount} opção(ões) atualizadas.`, "info");
+        saveConfig();
       }, stepOptions);
       blocksContainer.appendChild(card);
       card.renderOptions();

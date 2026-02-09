@@ -1512,14 +1512,14 @@ client.on("message", async (msg) => {
       // =====================================
       // TENTAR ENVIAR MENSAGEM DEFAULT
       // =====================================
-      const settings = getSettingsSync();
-      const defaultMessage = settings.defaultMessage.trim();
+      const settings = tenantConfig?.__settings || SETTINGS_DEFAULT;
+      const defaultMessage = (settings.defaultMessage || "").trim();
 
       if (defaultMessage) {
         // Determinar janela: ENV > settings > default (24h)
         const windowSeconds = parseInt(process.env.DEFAULT_WINDOW_SECONDS, 10) || 
-                             settings.defaultWindowSeconds || 
-                             (24 * 60 * 60);
+                 settings.windowSeconds || 
+                 (24 * 60 * 60);
 
         // Verificar se deve enviar default (janela configurável + ignorar msg atual)
         const canSendDefault = await shouldSendDefault(chat, contactId, { 
