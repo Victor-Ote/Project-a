@@ -379,7 +379,50 @@ const sessionMiddleware = session({
 
 app.use(express.json());
 app.use(sessionMiddleware);
+
+// =====================================
+// ROTAS: PÁGINA PRINCIPAL (ANTES DO STATIC)
+// =====================================
+app.get("/", (req, res) => {
+  if (req.session && (req.session.userId || req.session.user)) {
+    const token = req.session.token;
+    if (token) {
+      return res.redirect(`/t/${token}`);
+    }
+    const tenant = dbGetTenantByUserId(req.session.userId);
+    if (tenant?.token) {
+      return res.redirect(`/t/${tenant.token}`);
+    }
+  }
+  res.redirect("/login");
+});
+
+app.get("/login", (req, res) => {
+  if (req.session && (req.session.userId || req.session.user)) {
+    const token = req.session.token;
+    if (token) {
+      return res.redirect(`/t/${token}`);
+    }
+    const tenant = dbGetTenantByUserId(req.session.userId);
+    if (tenant?.token) {
+      return res.redirect(`/t/${tenant.token}`);
+    }
+  }
+  res.sendFile(path.join(__dirname, "web", "login.html"));
+});
+
 app.use(express.static(path.join(__dirname, "web")));
+
+// Proteção global das rotas web (exceto /login e assets estáticos)
+app.use((req, res, next) => {
+  if (req.path === "/login" || req.path.startsWith("/api") || req.path.startsWith("/socket.io")) {
+    return next();
+  }
+  if (req.method === "GET") {
+    return requireLoginForWeb(req, res, next);
+  }
+  return next();
+});
 
 initDb();
 
@@ -407,6 +450,14 @@ function requireTenantOwnership(req, res, next) {
     return res.status(403).json({ ok: false, error: "token_not_owned" });
   }
   req.tenant = tenant;
+  next();
+}
+
+function requireLoginForWeb(req, res, next) {
+  const isLoggedIn = !!(req.session && (req.session.userId || req.session.user));
+  if (!isLoggedIn) {
+    return res.redirect("/login");
+  }
   next();
 }
 
@@ -2008,17 +2059,6 @@ io.on("connection", async (socket) => {
   });
 });
 
-// =====================================
-// ROTAS: PÁGINA PRINCIPAL
-// =====================================
-app.get("/", (req, res) => {
-  res.redirect("/login");
-});
-
-app.get("/login", (req, res) => {
-  res.sendFile(path.join(__dirname, "web", "login.html"));
-});
-
 app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -2042,12 +2082,13 @@ app.post("/api/login", async (req, res) => {
     }
 
     req.session.userId = user.id;
+    req.session.user = { id: user.id, email: user.email, full_name: user.full_name };
     req.session.token = tenant.token;
     req.session.tenantId = tenant.tenant_id;
 
     console.log("[AUTH] login ok user=", user.id, "token=", tenant.token);
 
-    res.json({ ok: true, redirect: `/t/${tenant.token}/messages` });
+    res.json({ ok: true, redirect: `/t/${tenant.token}` });
   } catch (err) {
     console.error("[AUTH] login error:", err.message);
     res.status(500).json({ ok: false, error: "erro interno" });
@@ -2123,19 +2164,19 @@ app.put("/api/admin/users/:userId/profile", requireAdmin, (req, res) => {
   }
 });
 
-app.get("/messages", (req, res) => {
+app.get("/messages", requireLoginForWeb, (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
 });
 
-app.get("/t/:token/messages", requireAuth, requireTenantOwnership, (req, res) => {
+app.get("/t/:token/messages", requireLoginForWeb, requireTenantOwnership, (req, res) => {
   res.sendFile(path.join(__dirname, "web", "messages.html"));
 });
 
-app.get("/t/:token/rules", requireAuth, requireTenantOwnership, (req, res) => {
+app.get("/t/:token/rules", requireLoginForWeb, requireTenantOwnership, (req, res) => {
   res.sendFile(path.join(__dirname, "web", "rules.html"));
 });
 
-app.get("/t/:token", requireAuth, requireTenantOwnership, async (req, res) => {
+app.get("/t/:token", requireLoginForWeb, requireTenantOwnership, async (req, res) => {
   try {
     const result = await getTenantFromRequest(req);
     if (result.error) {

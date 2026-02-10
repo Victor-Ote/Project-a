@@ -50,6 +50,8 @@ form.addEventListener("submit", async (e) => {
     // Redirecionar
     if (data.redirect) {
       window.location.href = data.redirect;
+    } else if (data.token) {
+      window.location.href = `/t/${data.token}`;
     } else {
       window.location.href = "/";
     }
