@@ -13,6 +13,9 @@ const { getSettingsSync, saveSettingsSync } = require("./src/settings/settingsSt
 const { markActivity, markDefaultSent } = require("./src/state/contactStateStore");
 const { shouldSendDefault } = require("./src/bot/defaultReply");
 
+require('dotenv').config();
+
+
 // =====================================
 // CONFIGURAÇÃO DE PORTAS E DIRETÓRIOS
 // =====================================
@@ -376,6 +379,9 @@ const sessionMiddleware = session({
   saveUninitialized: false,
   cookie: { httpOnly: true }
 });
+
+console.log("ENV ADMIN_KEY:", process.env.ADMIN_KEY);
+console.log("ENV SESSION_SECRET:", process.env.SESSION_SECRET);
 
 app.use(express.json());
 app.use(sessionMiddleware);
